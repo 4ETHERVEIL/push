@@ -36,7 +36,8 @@ export default function App() {
   const [newRepoDesc, setNewRepoDesc] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [creatingRepo, setCreatingRepo] = useState(false);
-  
+  const [isBanned, setIsBanned] = useState(false);
+
   // Modal State
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
@@ -51,6 +52,72 @@ export default function App() {
     message: "",
     onConfirm: () => {},
   });
+  
+  // Security & Anti-Inspect System
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      alert("WARNING: PENGGUNAAN KLIK KANAN DILARANG! PERCOBAAN MELIHAT KODE AKAN MENGAKIBATKAN BANNED PERMANEN.");
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Block F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U, Ctrl+S
+      const bannedKeys = ["I", "J", "C", "U", "S"];
+      if (
+        e.key === "F12" ||
+        (e.ctrlKey && e.shiftKey && bannedKeys.includes(e.key.toUpperCase())) ||
+        (e.ctrlKey && e.key.toLowerCase() === "u") ||
+        (e.ctrlKey && e.key.toLowerCase() === "s")
+      ) {
+        e.preventDefault();
+        setIsBanned(true);
+      }
+    };
+
+    // DevTools detection via window size shifts
+    const detectDevTools = () => {
+      const threshold = 160;
+      if (window.outerWidth - window.innerWidth > threshold || window.outerHeight - window.innerHeight > threshold) {
+        setIsBanned(true);
+      }
+    };
+
+    window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("keydown", handleKeyDown);
+    const interval = setInterval(detectDevTools, 1000);
+
+    return () => {
+      window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("keydown", handleKeyDown);
+      clearInterval(interval);
+    };
+  }, []);
+
+  if (isBanned) {
+    return (
+      <div className="fixed inset-0 z-[1000] bg-red-600 flex flex-col items-center justify-center p-8 text-center text-white font-sans">
+        <motion.div 
+          initial={{ scale: 0.5, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="max-w-md p-12 border-8 border-black bg-white text-black shadow-[20px_20px_0px_rgba(0,0,0,1)]"
+        >
+          <AlertCircle size={80} className="mx-auto mb-6 text-red-600" />
+          <h1 className="text-4xl font-black uppercase mb-4 tracking-tighter">AKSES DIBLOKIR!</h1>
+          <p className="font-bold text-lg mb-8">
+            Sistem mendeteksi upaya ilegal untuk mengintip kode aplikasi. 
+            <br/><br/>
+            <span className="bg-red-600 text-white px-2 py-1">ANDA TELAH DI-BAN PERMANEN</span>
+          </p>
+          <div className="p-4 border-4 border-black bg-gray-100 font-mono text-[10px] text-left">
+            DEVICE_ID: {Math.random().toString(36).substring(2, 10).toUpperCase()}<br/>
+            REASON: CODE_INSPECTION_DETECTED<br/>
+            STATUS: PERMANENT_BAN<br/>
+            TIMESTAMP: {new Date().toISOString()}
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
 
   // Auth Listener
   useEffect(() => {
