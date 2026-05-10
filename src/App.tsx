@@ -671,18 +671,18 @@ export default function App() {
                       >
                         <FileText size={20} className={editingFile === idx ? "text-black" : "text-gray-400"} />
                         <span className="flex-1 font-bold text-sm truncate">{file.path}</span>
-                        <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div className="flex items-center gap-2">
                           <button 
                             onClick={(e) => { 
                               e.stopPropagation(); 
                               handleDeleteFileFromGitHub(idx); 
                             }}
-                            className="p-1 hover:text-red-600 transition-colors"
+                            className="p-2 border-2 border-transparent hover:border-red-500 hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all rounded-lg"
                             title={(file as any).sha ? "Hapus dari GitHub Permanen" : "Hapus dari daftar"}
                           >
-                            <Trash2 size={16} />
+                            <Trash2 size={18} />
                           </button>
-                          <ChevronRight size={16} />
+                          <ChevronRight size={16} className="text-gray-300" />
                         </div>
                       </div>
                     ))}
@@ -691,30 +691,61 @@ export default function App() {
               </div>
 
               {/* Editor */}
-              <div className="flex flex-col bg-gray-50">
+              <div className="flex flex-col bg-[#0d1117] relative">
                 {editingFile !== null && files[editingFile] ? (
                   <div className="h-full flex flex-col">
-                    <div className="p-4 bg-white border-b-4 border-black space-y-3">
-                      <div className="flex items-center gap-2 text-xs font-black uppercase text-gray-500">
-                        <FileText size={14} /> Nama File
+                    {/* Editor Header/Toolbar */}
+                    <div className="p-3 bg-[#161b22] border-b-2 border-black flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="flex gap-1.5 px-2">
+                          <div className="w-2.5 h-2.5 rounded-full bg-red-400" />
+                          <div className="w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                          <div className="w-2.5 h-2.5 rounded-full bg-green-400" />
+                        </div>
+                        <span className="text-[10px] font-mono text-gray-400 uppercase tracking-widest ml-2">Editor Mode</span>
                       </div>
-                      <Input 
+                      <button 
+                        onClick={() => setEditingFile(null)}
+                        className="text-[10px] bg-white/10 hover:bg-white/20 text-white px-2 py-1 rounded font-bold uppercase transition-colors"
+                      >
+                        Tutup
+                      </button>
+                    </div>
+
+                    <div className="p-4 bg-[#0d1117] border-b-2 border-black space-y-2">
+                      <div className="flex items-center gap-2 text-[10px] font-black uppercase text-blue-400">
+                        <FileText size={12} /> File Path
+                      </div>
+                      <input 
                         value={files[editingFile].path} 
                         onChange={(e) => updateFilePath(e.target.value)}
-                        className="bg-gray-50 text-sm"
+                        className="w-full bg-[#161b22] text-white border-2 border-black/50 focus:border-blue-500 p-2 font-mono text-xs rounded outline-none transition-colors"
+                        spellCheck={false}
                       />
                     </div>
-                    <textarea
-                      className="flex-1 p-4 font-mono text-sm focus:outline-none bg-[#1e1e1e] text-green-400 resize-none selection:bg-white selection:text-black"
-                      value={files[editingFile].content || ""}
-                      onChange={(e) => updateFileContent(e.target.value)}
-                      spellCheck={false}
-                    />
+
+                    <div className="flex-1 relative flex">
+                      {/* Gutter / Line Numbers Mock */}
+                      <div className="w-12 bg-[#161b22] border-r-2 border-black flex flex-col items-center pt-4 select-none opacity-30">
+                        {[...Array(20)].map((_, i) => (
+                           <span key={i} className="text-[10px] font-mono text-gray-500 h-[1.5rem] leading-[1.5rem]">{i + 1}</span>
+                        ))}
+                      </div>
+
+                      <textarea
+                        className="flex-1 p-4 font-mono text-sm focus:outline-none bg-[#0d1117] text-gray-300 resize-none selection:bg-blue-500/30 leading-[1.5rem]"
+                        value={files[editingFile].content || ""}
+                        onChange={(e) => updateFileContent(e.target.value)}
+                        spellCheck={false}
+                      />
+                    </div>
                   </div>
                 ) : (
-                  <div className="h-full flex flex-col items-center justify-center text-gray-400 p-8 text-center italic">
-                    <ArrowRight size={48} className="mb-4 opacity-20 rotate-90 md:rotate-0" />
-                    <p className="font-bold uppercase text-xs">Pilih file untuk diedit</p>
+                  <div className="h-full flex flex-col items-center justify-center text-gray-600 p-8 text-center italic bg-[#0d1117]">
+                    <div className="w-20 h-20 border-4 border-dashed border-gray-800 rounded-full flex items-center justify-center mb-4">
+                      <ArrowRight size={32} className="opacity-20 rotate-90 md:rotate-0" />
+                    </div>
+                    <p className="font-bold uppercase text-[10px] tracking-widest text-gray-500">Pilih file dari daftar untuk mulai mengedit</p>
                   </div>
                 )}
               </div>
