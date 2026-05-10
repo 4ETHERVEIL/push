@@ -8,10 +8,6 @@
     {
       "source": "/auth/(.*)",
       "destination": "/api/index"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/$1"
     }
   ]
 }

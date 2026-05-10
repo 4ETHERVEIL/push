@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Octokit } from "octokit";
 import JSZip from "jszip";
-import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight } from "lucide-react";
+import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input } from "./components/UI";
 import { cn } from "./lib/utils";
@@ -29,6 +29,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
 
+  // New Repo State
+  const [showCreateRepo, setShowCreateRepo] = useState(false);
+  const [newRepoName, setNewRepoName] = useState("");
+  const [newRepoDesc, setNewRepoDesc] = useState("");
+  const [isPrivate, setIsPrivate] = useState(false);
+  const [creatingRepo, setCreatingRepo] = useState(false);
+
   // Auth Listener
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -43,6 +50,18 @@ export default function App() {
   }, []);
 
   // Fetch User and Repos
+  const fetchRepos = async (authToken: string) => {
+    const octokit = new Octokit({ auth: authToken });
+    try {
+      const { data } = await octokit.rest.repos.listForAuthenticatedUser({ sort: "updated", per_page: 100 });
+      setRepos(data.map(r => ({ id: r.id, full_name: r.full_name, default_branch: r.default_branch || "main" })));
+      return data;
+    } catch (err) {
+      console.error(err);
+      return [];
+    }
+  };
+
   useEffect(() => {
     if (token) {
       const octokit = new Octokit({ auth: token });
@@ -53,22 +72,28 @@ export default function App() {
           handleLogout();
         });
       
-      octokit.rest.repos.listForAuthenticatedUser({ sort: "updated", per_page: 100 })
-        .then(({ data }) => {
-          setRepos(data.map(r => ({ id: r.id, full_name: r.full_name, default_branch: r.default_branch || "main" })));
-        })
-        .catch(err => console.error(err));
+      fetchRepos(token);
     }
   }, [token]);
 
   const handleLogin = async () => {
     try {
       const resp = await fetch("/api/auth/url");
-      const { url } = await resp.json();
-      window.open(url, "GitHub OAuth", "width=600,height=700");
+      const data = await resp.json();
+      
+      if (data.error) {
+        setStatus({ type: "error", message: data.error });
+        return;
+      }
+      
+      if (data.url) {
+        window.open(data.url, "GitHub OAuth", "width=600,height=700");
+      } else {
+        throw new Error("Invalid response from server");
+      }
     } catch (err) {
       console.error(err);
-      setStatus({ type: "error", message: "Failed to connect to authentication server." });
+      setStatus({ type: "error", message: "Failed to connect to authentication server. Check your environment variables." });
     }
   };
 
@@ -77,6 +102,41 @@ export default function App() {
     setToken(null);
     setUser(null);
     setRepos([]);
+  };
+
+  const handleCreateRepo = async () => {
+    if (!newRepoName || !token) return;
+    setCreatingRepo(true);
+    setStatus({ type: "info", message: "Creating repository..." });
+
+    try {
+      const octokit = new Octokit({ auth: token });
+      const { data } = await octokit.rest.repos.createForAuthenticatedUser({
+        name: newRepoName,
+        description: newRepoDesc,
+        private: isPrivate,
+        auto_init: true, // Initialize with README to have a default branch
+      });
+
+      setStatus({ type: "success", message: `Repository '${data.name}' created successfully!` });
+      setNewRepoName("");
+      setNewRepoDesc("");
+      setShowCreateRepo(false);
+      
+      // Refresh list and select new repo
+      await fetchRepos(token);
+      setSelectedRepo({ 
+        id: data.id, 
+        full_name: data.full_name, 
+        default_branch: data.default_branch || "main" 
+      });
+      setBranch(data.default_branch || "main");
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ type: "error", message: `Failed to create repo: ${err.message}` });
+    } finally {
+      setCreatingRepo(false);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -261,39 +321,112 @@ export default function App() {
         {/* Left Column - Setup */}
         <div className="lg:col-span-4 space-y-6">
           <Card className="space-y-4">
-            <div className="flex items-center gap-2 font-black uppercase text-sm border-b-2 border-black pb-2">
-              <FolderOpen size={18} /> Konfigurasi Repo
+            <div className="flex items-center justify-between border-b-2 border-black pb-2">
+              <div className="flex items-center gap-2 font-black uppercase text-sm">
+                <FolderOpen size={18} /> Konfigurasi Repo
+              </div>
+              <button 
+                onClick={() => setShowCreateRepo(!showCreateRepo)}
+                className={cn(
+                  "p-1 border-2 border-black transition-colors rounded hover:bg-black hover:text-white",
+                  showCreateRepo && "bg-black text-white"
+                )}
+                title="Create New Repo"
+              >
+                <Plus size={16} />
+              </button>
             </div>
             
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs font-black uppercase mb-1 block">Pilih Repositori</label>
-                <select 
-                  className="w-full border-4 border-black p-2 font-bold focus:outline-none bg-white cursor-pointer"
-                  onChange={(e) => {
-                    const r = repos.find(repo => repo.id === Number(e.target.value));
-                    setSelectedRepo(r || null);
-                    if (r) setBranch(r.default_branch);
-                  }}
-                  value={selectedRepo?.id || ""}
+            <AnimatePresence>
+              {showCreateRepo ? (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: "auto", opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden space-y-4 pt-2"
                 >
-                  <option value="">-- Pilih Repo --</option>
-                  {repos.map(repo => (
-                    <option key={repo.id} value={repo.id}>{repo.full_name}</option>
-                  ))}
-                </select>
-              </div>
+                  <div className="p-4 border-4 border-black bg-blue-50 space-y-3">
+                    <h3 className="font-black text-xs uppercase text-blue-600">Create New Repository</h3>
+                    <div>
+                      <label className="text-[10px] font-black uppercase mb-1 block">Repo Name</label>
+                      <Input 
+                        value={newRepoName} 
+                        onChange={(e) => setNewRepoName(e.target.value)} 
+                        placeholder="my-new-app"
+                        className="text-sm py-1"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-black uppercase mb-1 block">Description</label>
+                      <Input 
+                        value={newRepoDesc} 
+                        onChange={(e) => setNewRepoDesc(e.target.value)} 
+                        placeholder="Optonal description"
+                        className="text-sm py-1"
+                      />
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <button 
+                        onClick={() => setIsPrivate(false)}
+                        className={cn(
+                          "flex-1 flex items-center justify-center gap-2 py-1 border-2 border-black font-bold text-xs",
+                          !isPrivate ? "bg-white" : "bg-gray-200 opacity-50"
+                        )}
+                      >
+                        <Globe size={12} /> Public
+                      </button>
+                      <button 
+                        onClick={() => setIsPrivate(true)}
+                        className={cn(
+                          "flex-1 flex items-center justify-center gap-2 py-1 border-2 border-black font-bold text-xs",
+                          isPrivate ? "bg-white" : "bg-gray-200 opacity-50"
+                        )}
+                      >
+                        <Lock size={12} /> Private
+                      </button>
+                    </div>
+                    <Button 
+                      variant="yellow" 
+                      className="w-full py-2 text-xs shadow-[2px_2px_0px_rgba(0,0,0,1)] hover:shadow-[4px_4px_0px_rgba(0,0,0,1)]"
+                      onClick={handleCreateRepo}
+                      disabled={creatingRepo || !newRepoName}
+                    >
+                      {creatingRepo ? <Loader2 className="animate-spin mx-auto" size={16} /> : "CREATE REPO"}
+                    </Button>
+                  </div>
+                </motion.div>
+              ) : (
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-xs font-black uppercase mb-1 block">Pilih Repositori</label>
+                    <select 
+                      className="w-full border-4 border-black p-2 font-bold focus:outline-none bg-white cursor-pointer"
+                      onChange={(e) => {
+                        const r = repos.find(repo => repo.id === Number(e.target.value));
+                        setSelectedRepo(r || null);
+                        if (r) setBranch(r.default_branch);
+                      }}
+                      value={selectedRepo?.id || ""}
+                    >
+                      <option value="">-- Pilih Repo --</option>
+                      {repos.map(repo => (
+                        <option key={repo.id} value={repo.id}>{repo.full_name}</option>
+                      ))}
+                    </select>
+                  </div>
 
-              <div>
-                <label className="text-xs font-black uppercase mb-1 block">Branch</label>
-                <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
-              </div>
+                  <div>
+                    <label className="text-xs font-black uppercase mb-1 block">Branch</label>
+                    <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
+                  </div>
 
-              <div>
-                <label className="text-xs font-black uppercase mb-1 block">Pesan Commit</label>
-                <Input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} />
-              </div>
-            </div>
+                  <div>
+                    <label className="text-xs font-black uppercase mb-1 block">Pesan Commit</label>
+                    <Input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} />
+                  </div>
+                </div>
+              )}
+            </AnimatePresence>
           </Card>
 
           <Card className="bg-yellow-100">

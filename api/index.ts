@@ -18,10 +18,15 @@ const getAppUrl = (req: any) => {
   return `${protocol}://${host}`;
 };
 
-app.get("/api/auth/url", (req, res) => {
+app.get(["/api/auth/url", "/auth/url"], (req, res) => {
   const APP_URL = getAppUrl(req);
+  
+  if (!GITHUB_CLIENT_ID) {
+    return res.status(500).json({ error: "VITE_GITHUB_CLIENT_ID is not configured in environment variables" });
+  }
+
   const params = new URLSearchParams({
-    client_id: GITHUB_CLIENT_ID || "",
+    client_id: GITHUB_CLIENT_ID,
     redirect_uri: `${APP_URL}/auth/callback`,
     scope: "repo",
     state: Math.random().toString(36).substring(7),
