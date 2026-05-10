@@ -55,6 +55,7 @@ export default function App() {
     if (!token) return;
     setFetchingFiles(true);
     setFiles([]); // Reset files while fetching
+    setEditingFile(null); // Reset selection to prevent crashes
     const octokit = new Octokit({ auth: token });
     const [owner, repo] = repoFullName.split("/");
 
@@ -191,9 +192,9 @@ export default function App() {
       const octokit = new Octokit({ auth: token });
       const { data } = await octokit.rest.repos.createForAuthenticatedUser({
         name: newRepoName,
-        description: newRepoDesc,
+        description: newRepoName, // description from user or same as name
         private: isPrivate,
-        auto_init: true, // Initialize with README to have a default branch
+        auto_init: true,
       });
 
       setStatus({ type: "success", message: `Repository '${data.name}' created successfully!` });
@@ -201,7 +202,6 @@ export default function App() {
       setNewRepoDesc("");
       setShowCreateRepo(false);
       
-      // Refresh list and select new repo
       await fetchRepos(token);
       setSelectedRepo({ 
         id: data.id, 
@@ -214,6 +214,70 @@ export default function App() {
       setStatus({ type: "error", message: `Failed to create repo: ${err.message}` });
     } finally {
       setCreatingRepo(false);
+    }
+  };
+
+  const handleDeleteRepo = async () => {
+    if (!selectedRepo || !token) return;
+    const confirmDelete = window.confirm(`APAKAH ANDA YAKIN? Ini akan menghapus repositori ${selectedRepo.full_name} SECARA PERMANEN dari GitHub!`);
+    if (!confirmDelete) return;
+
+    setLoading(true);
+    setStatus({ type: "info", message: "Deleting repository..." });
+
+    try {
+      const octokit = new Octokit({ auth: token });
+      const [owner, repo] = selectedRepo.full_name.split("/");
+      await octokit.rest.repos.delete({ owner, repo });
+
+      setStatus({ type: "success", message: `Repository ${selectedRepo.full_name} deleted.` });
+      setSelectedRepo(null);
+      setFiles([]);
+      fetchRepos(token);
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ type: "error", message: `Delete failed: ${err.message}. Pastikan token OAuth Anda memiliki izin 'delete_repo'.` });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteFileFromGitHub = async (index: number) => {
+    const file = files[index];
+    if (!selectedRepo || !token || !file.path) return;
+    
+    // Check if it's a new file (not on GitHub yet)
+    if (!(file as any).sha) {
+      removeFile(index);
+      return;
+    }
+
+    const confirmDelete = window.confirm(`Hapus file "${file.path}" dari GitHub?`);
+    if (!confirmDelete) return;
+
+    setLoading(true);
+    setStatus({ type: "info", message: `Deleting ${file.path}...` });
+
+    try {
+      const octokit = new Octokit({ auth: token });
+      const [owner, repo] = selectedRepo.full_name.split("/");
+      
+      await octokit.rest.repos.deleteFile({
+        owner,
+        repo,
+        path: file.path,
+        message: `Delete: ${file.path} via Fast Push`,
+        sha: (file as any).sha,
+        branch: branch,
+      });
+
+      setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
+      removeFile(index);
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ type: "error", message: `Failed to delete file: ${err.message}` });
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -479,20 +543,31 @@ export default function App() {
                 <div className="space-y-4">
                   <div>
                     <label className="text-xs font-black uppercase mb-1 block">Pilih Repositori</label>
-                    <select 
-                      className="w-full border-4 border-black p-2 font-bold focus:outline-none bg-white cursor-pointer"
-                      onChange={(e) => {
-                        const r = repos.find(repo => repo.id === Number(e.target.value));
-                        setSelectedRepo(r || null);
-                        if (r) setBranch(r.default_branch);
-                      }}
-                      value={selectedRepo?.id || ""}
-                    >
-                      <option value="">-- Pilih Repo --</option>
-                      {repos.map(repo => (
-                        <option key={repo.id} value={repo.id}>{repo.full_name}</option>
-                      ))}
-                    </select>
+                    <div className="flex gap-2">
+                      <select 
+                        className="flex-1 border-4 border-black p-2 font-bold focus:outline-none bg-white cursor-pointer text-sm"
+                        onChange={(e) => {
+                          const r = repos.find(repo => repo.id === Number(e.target.value));
+                          setSelectedRepo(r || null);
+                          if (r) setBranch(r.default_branch);
+                        }}
+                        value={selectedRepo?.id || ""}
+                      >
+                        <option value="">-- Pilih Repo --</option>
+                        {repos.map(repo => (
+                          <option key={repo.id} value={repo.id}>{repo.full_name}</option>
+                        ))}
+                      </select>
+                      {selectedRepo && (
+                        <button 
+                          onClick={handleDeleteRepo}
+                          className="p-2 border-4 border-black bg-red-500 text-white hover:bg-red-600 transition-colors"
+                          title="Hapus Repo dari GitHub"
+                        >
+                          <Trash2 size={20} />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div>
@@ -598,8 +673,12 @@ export default function App() {
                         <span className="flex-1 font-bold text-sm truncate">{file.path}</span>
                         <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                           <button 
-                            onClick={(e) => { e.stopPropagation(); removeFile(idx); }}
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              handleDeleteFileFromGitHub(idx); 
+                            }}
                             className="p-1 hover:text-red-600 transition-colors"
+                            title={(file as any).sha ? "Hapus dari GitHub Permanen" : "Hapus dari daftar"}
                           >
                             <Trash2 size={16} />
                           </button>
@@ -613,7 +692,7 @@ export default function App() {
 
               {/* Editor */}
               <div className="flex flex-col bg-gray-50">
-                {editingFile !== null ? (
+                {editingFile !== null && files[editingFile] ? (
                   <div className="h-full flex flex-col">
                     <div className="p-4 bg-white border-b-4 border-black space-y-3">
                       <div className="flex items-center gap-2 text-xs font-black uppercase text-gray-500">
@@ -627,7 +706,7 @@ export default function App() {
                     </div>
                     <textarea
                       className="flex-1 p-4 font-mono text-sm focus:outline-none bg-[#1e1e1e] text-green-400 resize-none selection:bg-white selection:text-black"
-                      value={files[editingFile].content}
+                      value={files[editingFile].content || ""}
                       onChange={(e) => updateFileContent(e.target.value)}
                       spellCheck={false}
                     />
