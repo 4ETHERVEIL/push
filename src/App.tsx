@@ -3,7 +3,7 @@ import { Octokit } from "octokit";
 import JSZip from "jszip";
 import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Button, Card, Input } from "./components/UI";
+import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
 
 interface GitHubFile {
@@ -36,6 +36,21 @@ export default function App() {
   const [newRepoDesc, setNewRepoDesc] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [creatingRepo, setCreatingRepo] = useState(false);
+  
+  // Modal State
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+    confirmText?: string;
+    confirmVariant?: any;
+  }>({
+    isOpen: false,
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
 
   // Auth Listener
   useEffect(() => {
@@ -219,27 +234,34 @@ export default function App() {
 
   const handleDeleteRepo = async () => {
     if (!selectedRepo || !token) return;
-    const confirmDelete = window.confirm(`APAKAH ANDA YAKIN? Ini akan menghapus repositori ${selectedRepo.full_name} SECARA PERMANEN dari GitHub!`);
-    if (!confirmDelete) return;
+    
+    setConfirmModal({
+      isOpen: true,
+      title: "HAPUS REPOSITORI",
+      message: `APAKAH ANDA YAKIN? Ini akan menghapus repositori ${selectedRepo.full_name} SECARA PERMANEN dari GitHub. Data tidak dapat dipulihkan!`,
+      confirmText: "HAPUS SEKARANG",
+      confirmVariant: "danger",
+      onConfirm: async () => {
+        setLoading(true);
+        setStatus({ type: "info", message: "Deleting repository..." });
 
-    setLoading(true);
-    setStatus({ type: "info", message: "Deleting repository..." });
+        try {
+          const octokit = new Octokit({ auth: token });
+          const [owner, repo] = selectedRepo.full_name.split("/");
+          await octokit.rest.repos.delete({ owner, repo });
 
-    try {
-      const octokit = new Octokit({ auth: token });
-      const [owner, repo] = selectedRepo.full_name.split("/");
-      await octokit.rest.repos.delete({ owner, repo });
-
-      setStatus({ type: "success", message: `Repository ${selectedRepo.full_name} deleted.` });
-      setSelectedRepo(null);
-      setFiles([]);
-      fetchRepos(token);
-    } catch (err: any) {
-      console.error(err);
-      setStatus({ type: "error", message: `Delete failed: ${err.message}. Pastikan token OAuth Anda memiliki izin 'delete_repo'.` });
-    } finally {
-      setLoading(false);
-    }
+          setStatus({ type: "success", message: `Repository ${selectedRepo.full_name} deleted.` });
+          setSelectedRepo(null);
+          setFiles([]);
+          fetchRepos(token);
+        } catch (err: any) {
+          console.error(err);
+          setStatus({ type: "error", message: `Delete failed: ${err.message}. Pastikan token OAuth Anda memiliki izin 'delete_repo'.` });
+        } finally {
+          setLoading(false);
+        }
+      }
+    });
   };
 
   const handleDeleteFileFromGitHub = async (index: number) => {
@@ -252,33 +274,39 @@ export default function App() {
       return;
     }
 
-    const confirmDelete = window.confirm(`Hapus file "${file.path}" dari GitHub?`);
-    if (!confirmDelete) return;
+    setConfirmModal({
+      isOpen: true,
+      title: "HAPUS FILE",
+      message: `Hapus file "${file.path}" dari GitHub secara permanen?`,
+      confirmText: "HAPUS FILE",
+      confirmVariant: "danger",
+      onConfirm: async () => {
+        setLoading(true);
+        setStatus({ type: "info", message: `Deleting ${file.path}...` });
 
-    setLoading(true);
-    setStatus({ type: "info", message: `Deleting ${file.path}...` });
+        try {
+          const octokit = new Octokit({ auth: token });
+          const [owner, repo] = selectedRepo.full_name.split("/");
+          
+          await octokit.rest.repos.deleteFile({
+            owner,
+            repo,
+            path: file.path,
+            message: `Delete: ${file.path} via Fast Push`,
+            sha: (file as any).sha,
+            branch: branch,
+          });
 
-    try {
-      const octokit = new Octokit({ auth: token });
-      const [owner, repo] = selectedRepo.full_name.split("/");
-      
-      await octokit.rest.repos.deleteFile({
-        owner,
-        repo,
-        path: file.path,
-        message: `Delete: ${file.path} via Fast Push`,
-        sha: (file as any).sha,
-        branch: branch,
-      });
-
-      setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
-      removeFile(index);
-    } catch (err: any) {
-      console.error(err);
-      setStatus({ type: "error", message: `Failed to delete file: ${err.message}` });
-    } finally {
-      setLoading(false);
-    }
+          setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
+          removeFile(index);
+        } catch (err: any) {
+          console.error(err);
+          setStatus({ type: "error", message: `Failed to delete file: ${err.message}` });
+        } finally {
+          setLoading(false);
+        }
+      }
+    });
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -470,118 +498,54 @@ export default function App() {
                 <FolderOpen size={18} /> Konfigurasi Repo
               </div>
               <button 
-                onClick={() => setShowCreateRepo(!showCreateRepo)}
-                className={cn(
-                  "p-1 border-2 border-black transition-colors rounded hover:bg-black hover:text-white",
-                  showCreateRepo && "bg-black text-white"
-                )}
+                onClick={() => setShowCreateRepo(true)}
+                className="p-1 border-2 border-black transition-colors rounded hover:bg-black hover:text-white"
                 title="Create New Repo"
               >
                 <Plus size={16} />
               </button>
             </div>
             
-            <AnimatePresence>
-              {showCreateRepo ? (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden space-y-4 pt-2"
-                >
-                  <div className="p-4 border-4 border-black bg-blue-50 space-y-3">
-                    <h3 className="font-black text-xs uppercase text-blue-600">Create New Repository</h3>
-                    <div>
-                      <label className="text-[10px] font-black uppercase mb-1 block">Repo Name</label>
-                      <Input 
-                        value={newRepoName} 
-                        onChange={(e) => setNewRepoName(e.target.value)} 
-                        placeholder="my-new-app"
-                        className="text-sm py-1"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-black uppercase mb-1 block">Description</label>
-                      <Input 
-                        value={newRepoDesc} 
-                        onChange={(e) => setNewRepoDesc(e.target.value)} 
-                        placeholder="Optonal description"
-                        className="text-sm py-1"
-                      />
-                    </div>
-                    <div className="flex items-center gap-4">
-                      <button 
-                        onClick={() => setIsPrivate(false)}
-                        className={cn(
-                          "flex-1 flex items-center justify-center gap-2 py-1 border-2 border-black font-bold text-xs",
-                          !isPrivate ? "bg-white" : "bg-gray-200 opacity-50"
-                        )}
-                      >
-                        <Globe size={12} /> Public
-                      </button>
-                      <button 
-                        onClick={() => setIsPrivate(true)}
-                        className={cn(
-                          "flex-1 flex items-center justify-center gap-2 py-1 border-2 border-black font-bold text-xs",
-                          isPrivate ? "bg-white" : "bg-gray-200 opacity-50"
-                        )}
-                      >
-                        <Lock size={12} /> Private
-                      </button>
-                    </div>
-                    <Button 
-                      variant="yellow" 
-                      className="w-full py-2 text-xs shadow-[2px_2px_0px_rgba(0,0,0,1)] hover:shadow-[4px_4px_0px_rgba(0,0,0,1)]"
-                      onClick={handleCreateRepo}
-                      disabled={creatingRepo || !newRepoName}
+            <div className="space-y-4 pt-2">
+              <div>
+                <label className="text-xs font-black uppercase mb-1 block">Pilih Repositori</label>
+                <div className="flex gap-2">
+                  <select 
+                    className="flex-1 border-4 border-black p-2 font-bold focus:outline-none bg-white cursor-pointer text-sm"
+                    onChange={(e) => {
+                      const r = repos.find(repo => repo.id === Number(e.target.value));
+                      setSelectedRepo(r || null);
+                      if (r) setBranch(r.default_branch);
+                    }}
+                    value={selectedRepo?.id || ""}
+                  >
+                    <option value="">-- Pilih Repo --</option>
+                    {repos.map(repo => (
+                      <option key={repo.id} value={repo.id}>{repo.full_name}</option>
+                    ))}
+                  </select>
+                  {selectedRepo && (
+                    <button 
+                      onClick={handleDeleteRepo}
+                      className="p-2 border-4 border-black bg-red-500 text-white hover:bg-red-600 transition-colors"
+                      title="Hapus Repo dari GitHub"
                     >
-                      {creatingRepo ? <Loader2 className="animate-spin mx-auto" size={16} /> : "CREATE REPO"}
-                    </Button>
-                  </div>
-                </motion.div>
-              ) : (
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-xs font-black uppercase mb-1 block">Pilih Repositori</label>
-                    <div className="flex gap-2">
-                      <select 
-                        className="flex-1 border-4 border-black p-2 font-bold focus:outline-none bg-white cursor-pointer text-sm"
-                        onChange={(e) => {
-                          const r = repos.find(repo => repo.id === Number(e.target.value));
-                          setSelectedRepo(r || null);
-                          if (r) setBranch(r.default_branch);
-                        }}
-                        value={selectedRepo?.id || ""}
-                      >
-                        <option value="">-- Pilih Repo --</option>
-                        {repos.map(repo => (
-                          <option key={repo.id} value={repo.id}>{repo.full_name}</option>
-                        ))}
-                      </select>
-                      {selectedRepo && (
-                        <button 
-                          onClick={handleDeleteRepo}
-                          className="p-2 border-4 border-black bg-red-500 text-white hover:bg-red-600 transition-colors"
-                          title="Hapus Repo dari GitHub"
-                        >
-                          <Trash2 size={20} />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-black uppercase mb-1 block">Branch</label>
-                    <Input value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-black uppercase mb-1 block">Pesan Commit</label>
-                    <Input value={commitMessage} onChange={(e) => setCommitMessage(e.target.value)} />
-                  </div>
+                      <Trash2 size={20} />
+                    </button>
+                  )}
                 </div>
-              )}
-            </AnimatePresence>
+              </div>
+
+              <div>
+                <label className="text-xs font-black uppercase mb-1 block">Branch</label>
+                <Input value={branch} onChange={(e: any) => setBranch(e.target.value)} placeholder="main" />
+              </div>
+
+              <div>
+                <label className="text-xs font-black uppercase mb-1 block">Pesan Commit</label>
+                <Input value={commitMessage} onChange={(e: any) => setCommitMessage(e.target.value)} />
+              </div>
+            </div>
           </Card>
 
           <Card className="bg-yellow-100">
@@ -774,6 +738,67 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* Create Repo Modal */}
+      <Modal
+        isOpen={showCreateRepo}
+        onClose={() => setShowCreateRepo(false)}
+        title="BUAT REPOSITORI BARU"
+        confirmText={creatingRepo ? "MEMBUAT..." : "BUAT REPO"}
+        confirmVariant="yellow"
+        onConfirm={handleCreateRepo}
+      >
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <span className="text-[10px] font-black uppercase text-gray-500">Nama Repositori</span>
+            <Input 
+              value={newRepoName}
+              onChange={(e: any) => setNewRepoName(e.target.value)}
+              placeholder="my-repo-name"
+            />
+          </div>
+          <div className="space-y-1">
+            <span className="text-[10px] font-black uppercase text-gray-500">Deskripsi (Opsional)</span>
+            <Input 
+              value={newRepoDesc}
+              onChange={(e: any) => setNewRepoDesc(e.target.value)}
+              placeholder="Tentang proyek ini..."
+            />
+          </div>
+          <div className="flex items-center gap-4 pt-2">
+            <button 
+              onClick={() => setIsPrivate(false)}
+              className={cn(
+                "flex-1 p-3 border-4 border-black flex items-center justify-center gap-2 font-bold transition-all",
+                !isPrivate ? "bg-green-400 translate-x-[-2px] translate-y-[-2px] shadow-[4px_4px_0px_rgba(0,0,0,1)]" : "bg-white opacity-50"
+              )}
+            >
+              <Globe size={18} /> PUBLIC
+            </button>
+            <button 
+              onClick={() => setIsPrivate(true)}
+              className={cn(
+                "flex-1 p-3 border-4 border-black flex items-center justify-center gap-2 font-bold transition-all",
+                isPrivate ? "bg-red-400 translate-x-[-2px] translate-y-[-2px] shadow-[4px_4px_0px_rgba(0,0,0,1)]" : "bg-white opacity-50"
+              )}
+            >
+              <Lock size={18} /> PRIVATE
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Confirm Modal */}
+      <Modal
+        isOpen={confirmModal.isOpen}
+        onClose={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+        title={confirmModal.title}
+        confirmText={confirmModal.confirmText}
+        confirmVariant={confirmModal.confirmVariant}
+        onConfirm={confirmModal.onConfirm}
+      >
+        <p className="text-sm">{confirmModal.message}</p>
+      </Modal>
 
       {/* Footer Info */}
       <footer className="max-w-6xl mx-auto p-12 text-center opacity-50">

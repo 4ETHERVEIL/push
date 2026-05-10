@@ -1,5 +1,7 @@
 import React, { ReactNode } from "react";
 import { cn } from "../lib/utils";
+import { motion } from "framer-motion";
+import { Trash2 } from "lucide-react";
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   children?: React.ReactNode;
@@ -46,5 +48,57 @@ export function Input({ className, ...props }: any) {
       )}
       {...props}
     />
+  );
+}
+
+export function Modal({ 
+  isOpen, 
+  onClose, 
+  title, 
+  children, 
+  onConfirm, 
+  confirmText = "Ya, Lanjutkan",
+  confirmVariant = "danger"
+}: { 
+  isOpen: boolean; 
+  onClose: () => void; 
+  title: string; 
+  children: ReactNode; 
+  onConfirm?: () => void;
+  confirmText?: string;
+  confirmVariant?: "primary" | "secondary" | "danger" | "yellow";
+}) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0, y: 20 }}
+        animate={{ scale: 1, opacity: 1, y: 0 }}
+        className="max-w-md w-full bg-white border-4 border-black shadow-[12px_12px_0px_rgba(0,0,0,1)] overflow-hidden"
+      >
+        <div className="p-4 bg-black text-white flex items-center justify-between">
+          <h3 className="font-display font-black uppercase text-sm tracking-widest">{title}</h3>
+          <button onClick={onClose} className="hover:text-red-400 transition-colors">
+            <Trash2 size={18} />
+          </button>
+        </div>
+        <div className="p-6">
+          <div className="text-gray-700 font-bold mb-8">
+            {children}
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Button onClick={onClose} variant="primary" className="text-sm py-2">
+              BATAL
+            </Button>
+            {onConfirm && (
+              <Button onClick={() => { onConfirm(); onClose(); }} variant={confirmVariant} className="text-sm py-2">
+                {confirmText}
+              </Button>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    </div>
   );
 }
