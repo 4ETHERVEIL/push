@@ -473,6 +473,27 @@ export default function App() {
             <Button variant="yellow" className="w-full text-xl py-4" onClick={handleLogin}>
               LOGIN WITH GITHUB
             </Button>
+
+            <div className="grid grid-cols-1 gap-4 pt-4 text-left">
+              <Card className="bg-pink-50 flex items-center gap-4 p-3 border-2">
+                <div className="bg-black text-white p-2 rounded-lg">
+                  <CheckCircle2 size={18} />
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase font-black text-gray-500">Fitur Utama</p>
+                  <p className="font-bold text-xs">Multi-file Pushing</p>
+                </div>
+              </Card>
+              <Card className="bg-blue-50 flex items-center gap-4 p-3 border-2">
+                <div className="bg-black text-white p-2 rounded-lg">
+                  <FolderOpen size={18} />
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase font-black text-gray-500">Extract ZIP</p>
+                  <p className="font-bold text-xs">Auto Unzip & Edit</p>
+                </div>
+              </Card>
+            </div>
             <div className="flex items-center gap-2 justify-center text-xs font-black text-gray-500 uppercase">
               <AlertCircle size={14} />
               Aplikasi ini menggunakan OAuth GitHub yang aman.
@@ -751,27 +772,6 @@ export default function App() {
               </div>
             </div>
           </Card>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Card className="bg-pink-100 flex items-center gap-4">
-              <div className="bg-black text-white p-3 rounded-xl shadow-[4px_4px_0px_rgba(0,0,0,0.2)]">
-                <CheckCircle2 />
-              </div>
-              <div>
-                <p className="text-xs uppercase font-black text-gray-600">Fitur Utama</p>
-                <p className="font-bold">Multi-file Pushing</p>
-              </div>
-            </Card>
-            <Card className="bg-blue-100 flex items-center gap-4">
-              <div className="bg-black text-white p-3 rounded-xl shadow-[4px_4px_0px_rgba(0,0,0,0.2)]">
-                <FolderOpen />
-              </div>
-              <div>
-                <p className="text-xs uppercase font-black text-gray-600">Extract ZIP</p>
-                <p className="font-bold">Auto Unzip & Edit</p>
-              </div>
-            </Card>
-          </div>
         </div>
       </main>
 
@@ -839,7 +839,7 @@ export default function App() {
       {/* Footer Info */}
       <footer className="max-w-6xl mx-auto p-12 text-center opacity-50">
         <p className="text-xs font-black uppercase text-gray-400 tracking-widest flex items-center justify-center gap-2">
-          Build with <motion.span animate={{ scale: [1, 1.2, 1] }} transition={{ repeat: Infinity }} className="text-red-500">❤️</motion.span> for developers
+          ZYCHO
         </p>
       </footer>
     </div>
