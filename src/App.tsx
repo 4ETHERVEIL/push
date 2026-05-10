@@ -24,6 +24,7 @@ export default function App() {
   const [selectedRepo, setSelectedRepo] = useState<Repository | null>(null);
   const [branch, setBranch] = useState("main");
   const [files, setFiles] = useState<GitHubFile[]>([]);
+  const [fetchingFiles, setFetchingFiles] = useState(false);
   const [editingFile, setEditingFile] = useState<number | null>(null);
   const [commitMessage, setCommitMessage] = useState("Feat: push from GitHub Fast Push");
   const [loading, setLoading] = useState(false);
@@ -48,6 +49,83 @@ export default function App() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  // Fetch Repo Files (Tree)
+  const fetchRepoFiles = async (repoFullName: string, branchName: string) => {
+    if (!token) return;
+    setFetchingFiles(true);
+    setFiles([]); // Reset files while fetching
+    const octokit = new Octokit({ auth: token });
+    const [owner, repo] = repoFullName.split("/");
+
+    try {
+      // Get the tree recursively
+      const { data } = await octokit.rest.git.getTree({
+        owner,
+        repo,
+        tree_sha: branchName,
+        recursive: "true",
+      });
+
+      // Filter only blobs (files)
+      const repoFiles: GitHubFile[] = data.tree
+        .filter(item => item.type === "blob")
+        .map(item => ({
+          path: item.path || "",
+          content: "", // Content will be loaded on demand
+          sha: item.sha,
+        }));
+
+      setFiles(repoFiles);
+    } catch (err: any) {
+      console.error("Fetch Tree Error:", err);
+      // Some repos might be empty and have no branch yet
+      if (err.status !== 404 && err.status !== 409) {
+        setStatus({ type: "error", message: "Gagal mengambil daftar file dari repo." });
+      }
+    } finally {
+      setFetchingFiles(false);
+    }
+  };
+
+  // Fetch Single File Content
+  const fetchFileContent = async (index: number) => {
+    const file = files[index];
+    if (file.content || !token || !selectedRepo) return;
+
+    setLoading(true);
+    const octokit = new Octokit({ auth: token });
+    const [owner, repo] = selectedRepo.full_name.split("/");
+
+    try {
+      const { data }: any = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path: file.path,
+        ref: branch,
+      });
+
+      if (data && !Array.isArray(data) && data.content) {
+        const content = atob(data.content.replace(/\n/g, ""));
+        setFiles(prev => {
+          const next = [...prev];
+          next[index] = { ...next[index], content };
+          return next;
+        });
+      }
+    } catch (err) {
+      console.error("Fetch Content Error:", err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Trigger fetch when repo/branch changes
+  useEffect(() => {
+    if (selectedRepo && branch) {
+      fetchRepoFiles(selectedRepo.full_name, branch);
+    }
+  }, [selectedRepo, branch]);
 
   // Fetch User and Repos
   const fetchRepos = async (authToken: string) => {
@@ -208,17 +286,19 @@ export default function App() {
       const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
       const latestCommitSha = refData.object.sha;
 
-      // 2. Create Blobs
+      // 2. Create Blobs for files that have content (new or modified)
       const blobs = await Promise.all(
-        files.map(async (f) => {
-          const { data: blob } = await octokit.rest.git.createBlob({
-            owner,
-            repo,
-            content: f.content,
-            encoding: "utf-8",
-          });
-          return { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
-        })
+        files
+          .filter(f => f.content !== "") 
+          .map(async (f) => {
+            const { data: blob } = await octokit.rest.git.createBlob({
+              owner,
+              repo,
+              content: f.content,
+              encoding: "utf-8",
+            });
+            return { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
+          })
       );
 
       // 3. Create Tree
@@ -481,16 +561,24 @@ export default function App() {
           <Card className="min-h-[600px] flex flex-col p-0 overflow-hidden">
             <div className="p-4 border-b-4 border-black bg-black text-white flex items-center justify-between">
               <h3 className="font-display font-black uppercase text-lg tracking-wider">File Manager</h3>
-              <span className="text-xs bg-yellow-400 text-black px-2 py-1 rounded font-bold">{files.length} FILES</span>
+              <div className="flex items-center gap-2">
+                {fetchingFiles && <Loader2 className="animate-spin w-4 h-4 text-yellow-400" />}
+                <span className="text-xs bg-yellow-400 text-black px-2 py-1 rounded font-bold">{files.length} FILES</span>
+              </div>
             </div>
 
             <div className="flex-1 grid grid-cols-1 md:grid-cols-2">
               {/* File List */}
               <div className="border-r-0 md:border-r-4 border-black overflow-y-auto max-h-[500px]">
-                {files.length === 0 ? (
+                {fetchingFiles ? (
+                  <div className="h-full flex flex-col items-center justify-center p-12 text-center">
+                    <Loader2 size={48} className="animate-spin mb-4 text-blue-500" />
+                    <p className="font-bold uppercase text-xs">Mengambil struktur folder...</p>
+                  </div>
+                ) : files.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-gray-400 p-12 text-center italic">
                     <FileText size={48} className="mb-4 opacity-20" />
-                    <p className="font-bold uppercase text-xs">Belum ada file yang diunggah</p>
+                    <p className="font-bold uppercase text-xs">Belum ada file di repositori ini</p>
                   </div>
                 ) : (
                   <div className="divide-y-4 divide-black">
@@ -501,7 +589,10 @@ export default function App() {
                           "p-4 flex items-center gap-3 cursor-pointer group transition-colors",
                           editingFile === idx ? "bg-yellow-200" : "hover:bg-gray-100"
                         )}
-                        onClick={() => setEditingFile(idx)}
+                        onClick={() => {
+                          setEditingFile(idx);
+                          fetchFileContent(idx);
+                        }}
                       >
                         <FileText size={20} className={editingFile === idx ? "text-black" : "text-gray-400"} />
                         <span className="flex-1 font-bold text-sm truncate">{file.path}</span>
