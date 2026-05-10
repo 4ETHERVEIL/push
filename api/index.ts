@@ -28,7 +28,7 @@ app.get(["/api/auth/url", "/auth/url"], (req, res) => {
   const params = new URLSearchParams({
     client_id: GITHUB_CLIENT_ID,
     redirect_uri: `${APP_URL}/auth/callback`,
-    scope: "repo",
+    scope: "repo,delete_repo",
     state: Math.random().toString(36).substring(7),
   });
   res.json({ url: `https://github.com/login/oauth/authorize?${params.toString()}` });
