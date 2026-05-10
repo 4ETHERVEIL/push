@@ -75,11 +75,19 @@ export default function App() {
     const [owner, repo] = repoFullName.split("/");
 
     try {
-      // Get the tree recursively
+      // 1. Get current branch SHA to avoid caching stale data
+      const { data: refData } = await octokit.rest.git.getRef({
+        owner,
+        repo,
+        ref: `heads/${branchName}`,
+      });
+      const latestSha = refData.object.sha;
+
+      // 2. Get the tree recursively using the latest SHA
       const { data } = await octokit.rest.git.getTree({
         owner,
         repo,
-        tree_sha: branchName,
+        tree_sha: latestSha,
         recursive: "true",
       });
 
@@ -298,7 +306,9 @@ export default function App() {
           });
 
           setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
-          removeFile(index);
+          
+          // Force refresh from GitHub after deletion to sync state
+          await fetchRepoFiles(selectedRepo.full_name, branch);
         } catch (err: any) {
           console.error(err);
           setStatus({ type: "error", message: `Failed to delete file: ${err.message}` });
