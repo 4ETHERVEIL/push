@@ -155,7 +155,13 @@ export default function App() {
   const fetchRepos = async (authToken: string) => {
     const octokit = new Octokit({ auth: authToken });
     try {
-      const { data } = await octokit.rest.repos.listForAuthenticatedUser({ sort: "updated", per_page: 100 });
+      const { data } = await octokit.rest.repos.listForAuthenticatedUser({ 
+        sort: "updated", 
+        per_page: 100,
+        headers: {
+          "If-None-Match": "" // Force fresh data
+        }
+      });
       setRepos(data.map(r => ({ id: r.id, full_name: r.full_name, default_branch: r.default_branch || "main" })));
       return data;
     } catch (err) {
@@ -261,10 +267,14 @@ export default function App() {
           setStatus({ type: "success", message: `Repository ${selectedRepo.full_name} deleted.` });
           setSelectedRepo(null);
           setFiles([]);
-          fetchRepos(token);
+          await fetchRepos(token);
         } catch (err: any) {
           console.error(err);
-          setStatus({ type: "error", message: `Delete failed: ${err.message}. Pastikan token OAuth Anda memiliki izin 'delete_repo'.` });
+          const isPermissionErr = err.message.includes("admin") || err.status === 403 || err.status === 404;
+          setStatus({ 
+            type: "error", 
+            message: `Delete failed: ${err.message}. ${isPermissionErr ? "LOGOUT dan LOGIN kembali untuk memberikan izin 'delete_repo'." : ""}` 
+          });
         } finally {
           setLoading(false);
         }
@@ -507,13 +517,29 @@ export default function App() {
               <div className="flex items-center gap-2 font-black uppercase text-sm">
                 <FolderOpen size={18} /> Konfigurasi Repo
               </div>
-              <button 
-                onClick={() => setShowCreateRepo(true)}
-                className="p-1 border-2 border-black transition-colors rounded hover:bg-black hover:text-white"
-                title="Create New Repo"
-              >
-                <Plus size={16} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => {
+                    if (token) {
+                      setStatus({ type: "info", message: "Refreshing repo list..." });
+                      fetchRepos(token).then(() => setStatus({ type: "success", message: "Repo list updated." }));
+                    }
+                  }}
+                  className="p-1 border-2 border-black transition-colors rounded hover:bg-black hover:text-white"
+                  title="Refresh Repos"
+                >
+                  <motion.div whileTap={{ rotate: 180 }}>
+                    <Plus size={16} className="rotate-45" /> 
+                  </motion.div>
+                </button>
+                <button 
+                  onClick={() => setShowCreateRepo(true)}
+                  className="p-1 border-2 border-black transition-colors rounded hover:bg-black hover:text-white"
+                  title="Create New Repo"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
             </div>
             
             <div className="space-y-4 pt-2">
