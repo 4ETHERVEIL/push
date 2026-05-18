@@ -32,7 +32,6 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [showLogoMenu, setShowLogoMenu] = useState(false);
   const [activeMode, setActiveMode] = useState<"push" | "deploy">("push");
-  const [vercelToken, setVercelToken] = useState(localStorage.getItem("vercel_token") || "");
   const [vercelProjectName, setVercelProjectName] = useState(localStorage.getItem("vercel_project_name") || "");
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
 
@@ -137,14 +136,6 @@ export default function App() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
-
-  useEffect(() => {
-    if (vercelToken.trim()) {
-      localStorage.setItem("vercel_token", vercelToken.trim());
-    } else {
-      localStorage.removeItem("vercel_token");
-    }
-  }, [vercelToken]);
 
   useEffect(() => {
     if (vercelProjectName.trim()) {
@@ -646,54 +637,97 @@ export default function App() {
     return hydratedFiles;
   };
 
-  const handleDeployVercel = async () => {
+  const pushFilesToGitHub = async (options?: { clearAfter?: boolean; statusPrefix?: string }) => {
+    if (!selectedRepo || files.length === 0 || !token) {
+      throw new Error("Pilih repository dan upload file terlebih dahulu.");
+    }
+
+    const clearAfter = options?.clearAfter ?? false;
+    const statusPrefix = options?.statusPrefix || "GitHub";
+
+    setStatus({ type: "info", message: `${statusPrefix}: menyiapkan push ke GitHub...` });
+
+    const octokit = new Octokit({ auth: token });
+    const [owner, repo] = selectedRepo.full_name.split("/");
+
+    const hydratedFiles = await loadAllFileContents();
+    const filesToPush = hydratedFiles.filter(f => f.path && f.content !== "");
+
+    if (filesToPush.length === 0) {
+      throw new Error("Tidak ada file baru/update yang bisa di-push.");
+    }
+
+    // 1. Get latest commit SHA
+    const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+    const latestCommitSha = refData.object.sha;
+
+    // 2. Create blobs for new/updated files
+    const blobs = await Promise.all(
+      filesToPush.map(async (f) => {
+        const { data: blob } = await octokit.rest.git.createBlob({
+          owner,
+          repo,
+          content: f.content,
+          encoding: "utf-8",
+        });
+        return { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
+      })
+    );
+
+    // 3. Create tree
+    const { data: treeData } = await octokit.rest.git.createTree({
+      owner,
+      repo,
+      base_tree: latestCommitSha,
+      tree: blobs,
+    });
+
+    // 4. Create commit
+    const { data: commitData } = await octokit.rest.git.createCommit({
+      owner,
+      repo,
+      message: commitMessage,
+      tree: treeData.sha,
+      parents: [latestCommitSha],
+    });
+
+    // 5. Update branch ref
+    await octokit.rest.git.updateRef({
+      owner,
+      repo,
+      ref: `heads/${branch}`,
+      sha: commitData.sha,
+    });
+
+    if (clearAfter) {
+      setFiles([]);
+      setEditingFile(null);
+      setSelectedFiles(new Set());
+    } else {
+      await fetchRepoFiles(selectedRepo.full_name, branch);
+    }
+
+    return { count: filesToPush.length, repo: selectedRepo.full_name, commitSha: commitData.sha };
+  };
+
+  const handleVercelPushDeploy = async () => {
     setShowLogoMenu(false);
-
-    if (!selectedRepo || files.length === 0) {
-      setStatus({ type: "error", message: "Pilih repository dan pastikan file sudah tersedia sebelum deploy." });
-      return;
-    }
-
-    if (!vercelToken.trim()) {
-      setStatus({ type: "error", message: "Masukkan Vercel Token dulu di konfigurasi Deploy Vercel." });
-      return;
-    }
-
     setLoading(true);
-    setStatus({ type: "info", message: "Preparing deploy ke Vercel..." });
 
     try {
-      const hydratedFiles = await loadAllFileContents();
-      const deployFiles = hydratedFiles
-        .filter(file => file.path && !file.path.includes(".git/"))
-        .map(file => ({ file: file.path, data: file.content || "" }));
-
-      const projectName = (vercelProjectName.trim() || selectedRepo.full_name.split("/")[1])
+      const result = await pushFilesToGitHub({ clearAfter: false, statusPrefix: "Vercel Push Deploy" });
+      const projectName = (vercelProjectName.trim() || selectedRepo?.full_name.split("/")[1] || "project")
         .toLowerCase()
         .replace(/[^a-z0-9-]/g, "-")
-        .replace(/^-+|-+$/g, "") || "fast-push-project";
+        .replace(/^-+|-+$/g, "");
 
-      const response = await fetch("/api/vercel/deploy", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          token: vercelToken.trim(),
-          name: projectName,
-          files: deployFiles,
-          target: "production",
-        }),
+      setStatus({
+        type: "success",
+        message: `Vercel Push Deploy berhasil: ${result.count} file di-push ke ${result.repo}. Kalau repo ini sudah terhubung ke Vercel, deploy otomatis akan berjalan. Project: ${projectName}`,
       });
-
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result.error || result.message || "Deploy Vercel gagal.");
-      }
-
-      const deployUrl = result.url ? `https://${result.url}` : "deployment berhasil dibuat";
-      setStatus({ type: "success", message: `Deploy Vercel berhasil: ${deployUrl}` });
     } catch (err: any) {
       console.error(err);
-      setStatus({ type: "error", message: `Deploy Vercel gagal: ${err.message}` });
+      setStatus({ type: "error", message: `Vercel Push Deploy gagal: ${err.message}` });
     } finally {
       setLoading(false);
     }
@@ -701,62 +735,11 @@ export default function App() {
 
   const handlePush = async () => {
     setShowLogoMenu(false);
-    if (!selectedRepo || files.length === 0 || !token) return;
     setLoading(true);
-    setStatus({ type: "info", message: "Preparing push..." });
 
     try {
-      const octokit = new Octokit({ auth: token });
-      const [owner, repo] = selectedRepo.full_name.split("/");
-
-      // 1. Get latest commit SHA
-      const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
-      const latestCommitSha = refData.object.sha;
-
-      // 2. Create Blobs for files that have content (new or modified)
-      const blobs = await Promise.all(
-        files
-          .filter(f => f.content !== "") 
-          .map(async (f) => {
-            const { data: blob } = await octokit.rest.git.createBlob({
-              owner,
-              repo,
-              content: f.content,
-              encoding: "utf-8",
-            });
-            return { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
-          })
-      );
-
-      // 3. Create Tree
-      const { data: treeData } = await octokit.rest.git.createTree({
-        owner,
-        repo,
-        base_tree: latestCommitSha,
-        tree: blobs,
-      });
-
-      // 4. Create Commit
-      const { data: commitData } = await octokit.rest.git.createCommit({
-        owner,
-        repo,
-        message: commitMessage,
-        tree: treeData.sha,
-        parents: [latestCommitSha],
-      });
-
-      // 5. Update Ref
-      await octokit.rest.git.updateRef({
-        owner,
-        repo,
-        ref: `heads/${branch}`,
-        sha: commitData.sha,
-      });
-
-      setStatus({ type: "success", message: `Successfully pushed ${files.length} files to ${selectedRepo.full_name}!` });
-      setFiles([]);
-      setEditingFile(null);
-      setSelectedFiles(new Set());
+      const result = await pushFilesToGitHub({ clearAfter: true, statusPrefix: "Git Push" });
+      setStatus({ type: "success", message: `Successfully pushed ${result.count} files to ${result.repo}!` });
     } catch (err: any) {
       console.error(err);
       setStatus({ type: "error", message: `Push failed: ${err.message}` });
@@ -865,7 +848,7 @@ export default function App() {
                       activeMode === "deploy" ? "bg-blue-300" : "hover:bg-black hover:text-white"
                     )}
                   >
-                    <Rocket size={18} /> Deploy Vercel
+                    <Rocket size={18} /> Vercel Deploy
                   </button>
                 </motion.div>
               )}
@@ -874,7 +857,7 @@ export default function App() {
             <div className="hidden sm:block">
               <h1 className="text-xl font-display font-black tracking-tight">FAST PUSH</h1>
               <p className="text-[10px] font-black uppercase text-gray-500">
-                Mode: {activeMode === "push" ? "Git Push" : "Deploy Vercel"}
+                Mode: {activeMode === "push" ? "Git Push" : "Vercel Push Deploy"}
               </p>
             </div>
           </div>
@@ -899,7 +882,7 @@ export default function App() {
           <Card className="space-y-4">
             <div className="flex items-center justify-between border-b-2 border-black pb-2">
               <div className="flex items-center gap-2 font-black uppercase text-sm">
-                <FolderOpen size={18} /> {activeMode === "push" ? "Konfigurasi Git Push" : "Konfigurasi Deploy"}
+                <FolderOpen size={18} /> {activeMode === "push" ? "Konfigurasi Git Push" : "Konfigurasi Vercel Push"}
               </div>
               <div className="flex items-center gap-2">
                 <button 
@@ -973,36 +956,30 @@ export default function App() {
           {activeMode === "deploy" && (
           <Card className="bg-blue-100 space-y-4">
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
-              <Rocket size={18} /> Deploy Vercel
+              <Rocket size={18} /> Vercel Push Deploy
             </h3>
-            <div>
-              <label className="text-xs font-black uppercase mb-1 block">Vercel Token</label>
-              <Input
-                type="password"
-                value={vercelToken}
-                onChange={(e: any) => setVercelToken(e.target.value)}
-                placeholder="Masukkan token Vercel"
-              />
-              <p className="text-[10px] uppercase mt-2 text-gray-600 font-black">
-                Token disimpan di browser untuk deploy langsung dari aplikasi.
-              </p>
+            <div className="p-3 border-4 border-black bg-white text-xs font-black uppercase leading-relaxed">
+              Fitur ini tidak butuh Vercel Token. Aplikasi akan push file ke GitHub. Kalau repository sudah di-import/terhubung ke Vercel, Vercel akan auto deploy dari commit terbaru.
             </div>
             <div>
-              <label className="text-xs font-black uppercase mb-1 block">Nama Project</label>
+              <label className="text-xs font-black uppercase mb-1 block">Nama Project Vercel / Domain</label>
               <Input
                 value={vercelProjectName}
                 onChange={(e: any) => setVercelProjectName(e.target.value)}
                 placeholder={selectedRepo ? selectedRepo.full_name.split("/")[1] : "nama-project-vercel"}
               />
+              <p className="text-[10px] uppercase mt-2 text-gray-600 font-black">
+                Opsional, hanya untuk penanda project. Deploy tetap lewat push ke GitHub.
+              </p>
             </div>
             <Button
               variant="yellow"
               className="w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={loading || !selectedRepo || files.length === 0 || !vercelToken.trim()}
-              onClick={handleDeployVercel}
+              disabled={loading || !selectedRepo || files.length === 0}
+              onClick={handleVercelPushDeploy}
             >
               {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
-              DEPLOY TO VERCEL
+              VERCEL PUSH DEPLOY
             </Button>
           </Card>
           )}
@@ -1016,7 +993,7 @@ export default function App() {
                 <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
                 <p className="text-sm font-black">Klik atau Drag File/ZIP</p>
                 <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">
-                {activeMode === "push" ? "Mendukung multi-upload & auto replace" : "File ini dipakai untuk deploy Vercel"}
+                {activeMode === "push" ? "Mendukung multi-upload & auto replace" : "File akan di-push ke GitHub lalu auto deploy Vercel"}
               </p>
               </div>
               <input type="file" multiple className="hidden" onChange={handleFileUpload} />
