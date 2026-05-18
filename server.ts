@@ -10,6 +10,124 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const normalizeVercelProjectName = (value: string) => {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\.vercel\.app$/i, "")
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+};
+
+const getVercelToken = (bodyToken?: string) => {
+  return bodyToken || process.env.VERCEL_TOKEN || process.env.VITE_VERCEL_TOKEN || "";
+};
+
+async function setupVercelProject(req: any, res: any) {
+  const { vercelToken, projectName, repoFullName, repoId, branch = "main" } = req.body || {};
+  const token = getVercelToken(vercelToken);
+  const name = normalizeVercelProjectName(projectName);
+
+  if (!token) {
+    return res.status(400).json({
+      needsToken: true,
+      error: "Vercel token belum tersedia. Isi Vercel Token sekali, atau pasang VERCEL_TOKEN di environment server.",
+    });
+  }
+
+  if (!name || !repoFullName) {
+    return res.status(400).json({ error: "Nama project dan repository GitHub wajib diisi." });
+  }
+
+  try {
+    let project: any = null;
+    let created = false;
+
+    try {
+      const createResponse = await axios.post(
+        "https://api.vercel.com/v10/projects",
+        {
+          name,
+          gitRepository: {
+            type: "github",
+            repo: repoFullName,
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      project = createResponse.data;
+      created = true;
+    } catch (createError: any) {
+      const status = createError.response?.status;
+      const code = createError.response?.data?.error?.code;
+      const message = createError.response?.data?.error?.message || createError.response?.data?.message || "";
+
+      if (status === 409 || code === "project_already_exists" || /already exists/i.test(message)) {
+        const getResponse = await axios.get(
+          `https://api.vercel.com/v9/projects/${encodeURIComponent(name)}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        project = getResponse.data;
+      } else {
+        throw createError;
+      }
+    }
+
+    let deployment: any = null;
+    if (repoId) {
+      try {
+        const deployResponse = await axios.post(
+          "https://api.vercel.com/v13/deployments",
+          {
+            name,
+            target: "production",
+            gitSource: {
+              type: "github",
+              repoId: Number(repoId),
+              ref: branch || "main",
+            },
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Content-Type": "application/json",
+            },
+          }
+        );
+        deployment = deployResponse.data;
+      } catch (deployError: any) {
+        console.warn("Initial deployment trigger failed:", deployError.response?.data || deployError.message);
+      }
+    }
+
+    const webUrl = `https://${name}.vercel.app`;
+    const dashboardUrl = `https://vercel.com/${project?.accountId || "dashboard"}/${name}`;
+
+    return res.json({
+      ok: true,
+      created,
+      project,
+      deployment,
+      webUrl,
+      dashboardUrl,
+      message: deployment
+        ? `Setup otomatis berhasil. Deployment sedang diproses: ${webUrl}`
+        : `Project Vercel berhasil ${created ? "dibuat" : "ditemukan"}: ${webUrl}. Jika deployment belum jalan, pastikan Vercel GitHub App sudah punya akses ke repo ini.`,
+    });
+  } catch (error: any) {
+    console.error("Vercel Setup Error:", error.response?.data || error.message);
+    return res.status(error.response?.status || 500).json({
+      error: error.response?.data?.error?.message || error.response?.data?.message || error.message || "Setup Vercel otomatis gagal.",
+      details: error.response?.data,
+    });
+  }
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -83,6 +201,8 @@ async function startServer() {
       res.status(500).send("Authentication failed");
     }
   });
+
+  app.post("/api/vercel/setup-project", setupVercelProject);
 
   app.post("/api/vercel/deploy", async (req, res) => {
     const { token, name, files, target = "production" } = req.body || {};

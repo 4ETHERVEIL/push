@@ -33,8 +33,10 @@ export default function App() {
   const [showLogoMenu, setShowLogoMenu] = useState(false);
   const [activeMode, setActiveMode] = useState<"push" | "deploy">("push");
   const [vercelProjectName, setVercelProjectName] = useState(localStorage.getItem("vercel_project_name") || "");
+  const [vercelToken, setVercelToken] = useState(localStorage.getItem("vercel_token") || "");
+  const [showVercelTokenInput, setShowVercelTokenInput] = useState(false);
   const [vercelWebUrl, setVercelWebUrl] = useState<string | null>(null);
-  const [vercelImportUrl, setVercelImportUrl] = useState<string | null>(null);
+  const [vercelDashboardUrl, setVercelDashboardUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
 
   // New Repo State
@@ -146,6 +148,14 @@ export default function App() {
       localStorage.removeItem("vercel_project_name");
     }
   }, [vercelProjectName]);
+
+  useEffect(() => {
+    if (vercelToken.trim()) {
+      localStorage.setItem("vercel_token", vercelToken.trim());
+    } else {
+      localStorage.removeItem("vercel_token");
+    }
+  }, [vercelToken]);
 
   // Fetch Repo Files (Tree)
   const fetchRepoFiles = async (repoFullName: string, branchName: string) => {
@@ -740,16 +750,46 @@ export default function App() {
       return;
     }
 
-    const githubRepoUrl = `https://github.com/${selectedRepo.full_name}`;
-    const importUrl = `https://vercel.com/new/clone?repository-url=${encodeURIComponent(githubRepoUrl)}&project-name=${encodeURIComponent(projectName)}`;
-    const webUrl = `https://${projectName}.vercel.app`;
+    setLoading(true);
+    setVercelWebUrl(null);
+    setVercelDashboardUrl(null);
+    setStatus({ type: "info", message: "Menyiapkan project Vercel otomatis dari repository GitHub..." });
 
-    setVercelWebUrl(webUrl);
-    setVercelImportUrl(importUrl);
-    setStatus({
-      type: "success",
-      message: `Link web sudah dibuat di tampilan: ${webUrl}. Jika repo belum pernah tersambung ke Vercel, buka tombol setup Vercel satu kali.`,
-    });
+    try {
+      const response = await fetch("/api/vercel/setup-project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          vercelToken: vercelToken.trim() || undefined,
+          projectName,
+          repoFullName: selectedRepo.full_name,
+          repoId: selectedRepo.id,
+          branch,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        if (data.needsToken) {
+          setShowVercelTokenInput(true);
+        }
+        throw new Error(data.error || "Setup Vercel gagal.");
+      }
+
+      setShowVercelTokenInput(false);
+      setVercelWebUrl(data.webUrl || `https://${projectName}.vercel.app`);
+      setVercelDashboardUrl(data.dashboardUrl || null);
+      setStatus({
+        type: "success",
+        message: data.message || `Website berhasil disiapkan otomatis: https://${projectName}.vercel.app`,
+      });
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ type: "error", message: err.message || "Setup Vercel gagal." });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handlePush = async () => {
@@ -993,6 +1033,20 @@ export default function App() {
                 Boleh isi nama-web atau nama-web.vercel.app. Nama ini akan dipakai sebagai project/domain default Vercel.
               </p>
             </div>
+            {showVercelTokenInput && (
+              <div className="border-4 border-black bg-white p-3 space-y-2">
+                <label className="text-xs font-black uppercase mb-1 block">Vercel Token</label>
+                <Input
+                  type="password"
+                  value={vercelToken}
+                  onChange={(e: any) => setVercelToken(e.target.value)}
+                  placeholder="Masukkan token Vercel untuk setup otomatis"
+                />
+                <p className="text-[10px] uppercase text-gray-600 font-black leading-relaxed">
+                  Dibutuhkan satu kali untuk menghubungkan repo GitHub ke Vercel secara otomatis lewat API. Jika VERCEL_TOKEN sudah dipasang di environment server, input ini tidak akan diperlukan.
+                </p>
+              </div>
+            )}
             <Button
               variant="yellow"
               className="w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1000,7 +1054,7 @@ export default function App() {
               onClick={handleVercelPushDeploy}
             >
               {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
-              BUAT WEB VERCEL
+              SETUP OTOMATIS VERCEL
             </Button>
 
             {vercelWebUrl && (
@@ -1017,16 +1071,16 @@ export default function App() {
                   {vercelWebUrl}
                 </a>
                 <p className="text-[10px] uppercase font-black text-gray-600 leading-relaxed">
-                  Aplikasi tidak otomatis pindah ke halaman Vercel lagi. Link tampil di sini setelah tombol dibuat.
+                  Repo sudah disiapkan otomatis ke Vercel. Link website tampil di sini tanpa redirect.
                 </p>
-                {vercelImportUrl && (
+                {vercelDashboardUrl && (
                   <a
-                    href={vercelImportUrl}
+                    href={vercelDashboardUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block text-center border-4 border-black bg-blue-300 p-3 font-black text-xs uppercase hover:bg-blue-400 transition-colors"
                   >
-                    Setup Deploy Vercel
+                    Buka Dashboard Project
                   </a>
                 )}
               </div>
