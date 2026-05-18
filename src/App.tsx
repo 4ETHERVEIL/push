@@ -227,10 +227,14 @@ export default function App() {
 
   // Trigger fetch when repo/branch changes
   useEffect(() => {
-    if (selectedRepo && branch) {
+    if (activeMode === "push" && selectedRepo && branch) {
       fetchRepoFiles(selectedRepo.full_name, branch);
+    } else if (activeMode === "deploy") {
+      setFiles([]);
+      setEditingFile(null);
+      setSelectedFiles(new Set());
     }
-  }, [selectedRepo, branch]);
+  }, [selectedRepo, branch, activeMode]);
 
   // Fetch User and Repos
   const fetchRepos = async (authToken: string) => {
@@ -710,27 +714,39 @@ export default function App() {
     return { count: filesToPush.length, repo: selectedRepo.full_name, commitSha: commitData.sha };
   };
 
+  const normalizeVercelProjectName = (value: string) => {
+    return value
+      .toLowerCase()
+      .replace(/\.vercel\.app$/i, "")
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  };
+
   const handleVercelPushDeploy = async () => {
     setShowLogoMenu(false);
-    setLoading(true);
 
-    try {
-      const result = await pushFilesToGitHub({ clearAfter: false, statusPrefix: "Vercel Push Deploy" });
-      const projectName = (vercelProjectName.trim() || selectedRepo?.full_name.split("/")[1] || "project")
-        .toLowerCase()
-        .replace(/[^a-z0-9-]/g, "-")
-        .replace(/^-+|-+$/g, "");
-
-      setStatus({
-        type: "success",
-        message: `Vercel Push Deploy berhasil: ${result.count} file di-push ke ${result.repo}. Kalau repo ini sudah terhubung ke Vercel, deploy otomatis akan berjalan. Project: ${projectName}`,
-      });
-    } catch (err: any) {
-      console.error(err);
-      setStatus({ type: "error", message: `Vercel Push Deploy gagal: ${err.message}` });
-    } finally {
-      setLoading(false);
+    if (!selectedRepo) {
+      setStatus({ type: "error", message: "Pilih repository GitHub dulu." });
+      return;
     }
+
+    const projectName = normalizeVercelProjectName(vercelProjectName || selectedRepo.full_name.split("/")[1]);
+
+    if (!projectName) {
+      setStatus({ type: "error", message: "Masukkan nama domain/project Vercel yang valid." });
+      return;
+    }
+
+    const githubRepoUrl = `https://github.com/${selectedRepo.full_name}`;
+    const vercelImportUrl = `https://vercel.com/new/clone?repository-url=${encodeURIComponent(githubRepoUrl)}&project-name=${encodeURIComponent(projectName)}`;
+
+    setStatus({
+      type: "success",
+      message: `Repo ${selectedRepo.full_name} siap dibuat menjadi web. Domain default: ${projectName}.vercel.app`,
+    });
+
+    window.open(vercelImportUrl, "_blank", "noopener,noreferrer");
   };
 
   const handlePush = async () => {
@@ -857,7 +873,7 @@ export default function App() {
             <div className="hidden sm:block">
               <h1 className="text-xl font-display font-black tracking-tight">FAST PUSH</h1>
               <p className="text-[10px] font-black uppercase text-gray-500">
-                Mode: {activeMode === "push" ? "Git Push" : "Vercel Push Deploy"}
+                Mode: {activeMode === "push" ? "Git Push" : "Vercel Deploy"}
               </p>
             </div>
           </div>
@@ -878,11 +894,11 @@ export default function App() {
 
       <main className="max-w-6xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         {/* Left Column - Setup */}
-        <div className="lg:col-span-4 space-y-6">
+        <div className={cn("space-y-6", activeMode === "deploy" ? "lg:col-span-12 max-w-2xl mx-auto w-full" : "lg:col-span-4")}>
           <Card className="space-y-4">
             <div className="flex items-center justify-between border-b-2 border-black pb-2">
               <div className="flex items-center gap-2 font-black uppercase text-sm">
-                <FolderOpen size={18} /> {activeMode === "push" ? "Konfigurasi Git Push" : "Konfigurasi Vercel Push"}
+                <FolderOpen size={18} /> {activeMode === "push" ? "Konfigurasi Git Push" : "Konfigurasi Vercel Deploy"}
               </div>
               <div className="flex items-center gap-2">
                 <button 
@@ -939,10 +955,12 @@ export default function App() {
                 </div>
               </div>
 
-              <div>
-                <label className="text-xs font-black uppercase mb-1 block">Branch</label>
-                <Input value={branch} onChange={(e: any) => setBranch(e.target.value)} placeholder="main" />
-              </div>
+              {activeMode === "push" && (
+                <div>
+                  <label className="text-xs font-black uppercase mb-1 block">Branch</label>
+                  <Input value={branch} onChange={(e: any) => setBranch(e.target.value)} placeholder="main" />
+                </div>
+              )}
 
               {activeMode === "push" && (
                 <div>
@@ -956,34 +974,35 @@ export default function App() {
           {activeMode === "deploy" && (
           <Card className="bg-blue-100 space-y-4">
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
-              <Rocket size={18} /> Vercel Push Deploy
+              <Rocket size={18} /> Buat Web Vercel
             </h3>
             <div className="p-3 border-4 border-black bg-white text-xs font-black uppercase leading-relaxed">
-              Fitur ini tidak butuh Vercel Token. Aplikasi akan push file ke GitHub. Kalau repository sudah di-import/terhubung ke Vercel, Vercel akan auto deploy dari commit terbaru.
+              Pilih repository GitHub yang ingin dijadikan website, lalu masukkan nama domain default Vercel. Contoh: nama-web.vercel.app
             </div>
             <div>
-              <label className="text-xs font-black uppercase mb-1 block">Nama Project Vercel / Domain</label>
+              <label className="text-xs font-black uppercase mb-1 block">Nama Domain Default</label>
               <Input
                 value={vercelProjectName}
                 onChange={(e: any) => setVercelProjectName(e.target.value)}
-                placeholder={selectedRepo ? selectedRepo.full_name.split("/")[1] : "nama-project-vercel"}
+                placeholder={selectedRepo ? `${selectedRepo.full_name.split("/")[1]}.vercel.app` : "nama-web.vercel.app"}
               />
               <p className="text-[10px] uppercase mt-2 text-gray-600 font-black">
-                Opsional, hanya untuk penanda project. Deploy tetap lewat push ke GitHub.
+                Boleh isi nama-web atau nama-web.vercel.app. Nama ini akan dipakai sebagai project/domain default Vercel.
               </p>
             </div>
             <Button
               variant="yellow"
               className="w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={loading || !selectedRepo || files.length === 0}
+              disabled={loading || !selectedRepo}
               onClick={handleVercelPushDeploy}
             >
               {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
-              VERCEL PUSH DEPLOY
+              BUAT WEB VERCEL
             </Button>
           </Card>
           )}
 
+          {activeMode === "push" && (
           <Card className="bg-yellow-100">
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
               <Upload size={18} /> Upload File
@@ -993,12 +1012,13 @@ export default function App() {
                 <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
                 <p className="text-sm font-black">Klik atau Drag File/ZIP</p>
                 <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">
-                {activeMode === "push" ? "Mendukung multi-upload & auto replace" : "File akan di-push ke GitHub lalu auto deploy Vercel"}
-              </p>
+                  Mendukung multi-upload & auto replace
+                </p>
               </div>
               <input type="file" multiple className="hidden" onChange={handleFileUpload} />
             </label>
           </Card>
+          )}
 
           <AnimatePresence>
             {status && (
@@ -1036,6 +1056,7 @@ export default function App() {
         </div>
 
         {/* Right Column - File List & Editor */}
+        {activeMode === "push" && (
         <div className="lg:col-span-8 space-y-6">
           <Card className="min-h-[600px] flex flex-col p-0 overflow-hidden">
             <div className="p-4 border-b-4 border-black bg-black text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1186,6 +1207,7 @@ export default function App() {
             </div>
           </Card>
         </div>
+        )}
       </main>
 
       {/* Create Repo Modal */}
