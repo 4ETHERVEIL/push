@@ -31,6 +31,8 @@ export default function App() {
   const [commitMessage, setCommitMessage] = useState("Feat: push from GitHub Fast Push");
   const [loading, setLoading] = useState(false);
   const [showLogoMenu, setShowLogoMenu] = useState(false);
+  const [vercelToken, setVercelToken] = useState(localStorage.getItem("vercel_token") || "");
+  const [vercelProjectName, setVercelProjectName] = useState(localStorage.getItem("vercel_project_name") || "");
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
 
   // New Repo State
@@ -134,6 +136,22 @@ export default function App() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
+
+  useEffect(() => {
+    if (vercelToken.trim()) {
+      localStorage.setItem("vercel_token", vercelToken.trim());
+    } else {
+      localStorage.removeItem("vercel_token");
+    }
+  }, [vercelToken]);
+
+  useEffect(() => {
+    if (vercelProjectName.trim()) {
+      localStorage.setItem("vercel_project_name", vercelProjectName.trim());
+    } else {
+      localStorage.removeItem("vercel_project_name");
+    }
+  }, [vercelProjectName]);
 
   // Fetch Repo Files (Tree)
   const fetchRepoFiles = async (repoFullName: string, branchName: string) => {
@@ -593,20 +611,91 @@ export default function App() {
   };
 
 
-  const handleDeployVercel = () => {
+  const loadAllFileContents = async () => {
+    if (!selectedRepo || !token) return files;
+
+    const octokit = new Octokit({ auth: token });
+    const [owner, repo] = selectedRepo.full_name.split("/");
+
+    const hydratedFiles = await Promise.all(files.map(async (file) => {
+      if (file.content !== "" || !file.sha) return file;
+
+      try {
+        const { data }: any = await octokit.rest.repos.getContent({
+          owner,
+          repo,
+          path: file.path,
+          ref: branch,
+        });
+
+        if (data && !Array.isArray(data) && data.content) {
+          return {
+            ...file,
+            content: atob(data.content.replace(/\n/g, "")),
+          };
+        }
+      } catch (err) {
+        console.error(`Gagal membaca ${file.path}:`, err);
+      }
+
+      return file;
+    }));
+
+    setFiles(hydratedFiles);
+    return hydratedFiles;
+  };
+
+  const handleDeployVercel = async () => {
     setShowLogoMenu(false);
 
-    if (!selectedRepo) {
-      window.open("https://vercel.com/new", "_blank", "noopener,noreferrer");
-      setStatus({ type: "info", message: "Pilih repository dulu agar halaman Deploy Vercel langsung terisi otomatis." });
+    if (!selectedRepo || files.length === 0) {
+      setStatus({ type: "error", message: "Pilih repository dan pastikan file sudah tersedia sebelum deploy." });
       return;
     }
 
-    const repoUrl = `https://github.com/${selectedRepo.full_name}`;
-    const deployUrl = `https://vercel.com/new/clone?repository-url=${encodeURIComponent(repoUrl)}`;
+    if (!vercelToken.trim()) {
+      setStatus({ type: "error", message: "Masukkan Vercel Token dulu di konfigurasi Deploy Vercel." });
+      return;
+    }
 
-    window.open(deployUrl, "_blank", "noopener,noreferrer");
-    setStatus({ type: "success", message: `Membuka Vercel Deploy untuk ${selectedRepo.full_name}.` });
+    setLoading(true);
+    setStatus({ type: "info", message: "Preparing deploy ke Vercel..." });
+
+    try {
+      const hydratedFiles = await loadAllFileContents();
+      const deployFiles = hydratedFiles
+        .filter(file => file.path && !file.path.includes(".git/"))
+        .map(file => ({ file: file.path, data: file.content || "" }));
+
+      const projectName = (vercelProjectName.trim() || selectedRepo.full_name.split("/")[1])
+        .toLowerCase()
+        .replace(/[^a-z0-9-]/g, "-")
+        .replace(/^-+|-+$/g, "") || "fast-push-project";
+
+      const response = await fetch("/api/vercel/deploy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: vercelToken.trim(),
+          name: projectName,
+          files: deployFiles,
+          target: "production",
+        }),
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || result.message || "Deploy Vercel gagal.");
+      }
+
+      const deployUrl = result.url ? `https://${result.url}` : "deployment berhasil dibuat";
+      setStatus({ type: "success", message: `Deploy Vercel berhasil: ${deployUrl}` });
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ type: "error", message: `Deploy Vercel gagal: ${err.message}` });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handlePush = async () => {
@@ -762,7 +851,8 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleDeployVercel}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left font-black uppercase text-sm hover:bg-black hover:text-white transition-colors"
+                    disabled={loading || !selectedRepo || files.length === 0}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-left font-black uppercase text-sm hover:bg-black hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   >
                     <Rocket size={18} /> Deploy Vercel
                   </button>
@@ -860,6 +950,41 @@ export default function App() {
                 <Input value={commitMessage} onChange={(e: any) => setCommitMessage(e.target.value)} />
               </div>
             </div>
+          </Card>
+
+          <Card className="bg-blue-100 space-y-4">
+            <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
+              <Rocket size={18} /> Deploy Vercel
+            </h3>
+            <div>
+              <label className="text-xs font-black uppercase mb-1 block">Vercel Token</label>
+              <Input
+                type="password"
+                value={vercelToken}
+                onChange={(e: any) => setVercelToken(e.target.value)}
+                placeholder="Masukkan token Vercel"
+              />
+              <p className="text-[10px] uppercase mt-2 text-gray-600 font-black">
+                Token disimpan di browser untuk deploy langsung dari aplikasi.
+              </p>
+            </div>
+            <div>
+              <label className="text-xs font-black uppercase mb-1 block">Nama Project</label>
+              <Input
+                value={vercelProjectName}
+                onChange={(e: any) => setVercelProjectName(e.target.value)}
+                placeholder={selectedRepo ? selectedRepo.full_name.split("/")[1] : "nama-project-vercel"}
+              />
+            </div>
+            <Button
+              variant="yellow"
+              className="w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={loading || !selectedRepo || files.length === 0 || !vercelToken.trim()}
+              onClick={handleDeployVercel}
+            >
+              {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
+              DEPLOY TO VERCEL
+            </Button>
           </Card>
 
           <Card className="bg-yellow-100">

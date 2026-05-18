@@ -34,6 +34,46 @@ app.get(["/api/auth/url", "/auth/url"], (req, res) => {
   res.json({ url: `https://github.com/login/oauth/authorize?${params.toString()}` });
 });
 
+app.post(["/api/vercel/deploy", "/vercel/deploy"], async (req, res) => {
+  const { token, name, files, target = "production" } = req.body || {};
+
+  if (!token) {
+    return res.status(400).json({ error: "Vercel token wajib diisi." });
+  }
+
+  if (!name || !Array.isArray(files) || files.length === 0) {
+    return res.status(400).json({ error: "Nama project dan files wajib diisi." });
+  }
+
+  try {
+    const response = await axios.post(
+      "https://api.vercel.com/v13/deployments",
+      {
+        name,
+        files,
+        target,
+        projectSettings: {
+          framework: null,
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    res.json(response.data);
+  } catch (error: any) {
+    console.error("Vercel Deploy Error:", error.response?.data || error.message);
+    res.status(error.response?.status || 500).json({
+      error: error.response?.data?.error?.message || error.response?.data?.message || error.message || "Deploy Vercel gagal.",
+      details: error.response?.data,
+    });
+  }
+});
+
 app.get(["/auth/callback", "/api/auth/callback"], async (req, res) => {
   const { code } = req.query;
 
