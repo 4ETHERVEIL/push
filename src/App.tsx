@@ -31,6 +31,7 @@ export default function App() {
   const [commitMessage, setCommitMessage] = useState("Feat: push from GitHub Fast Push");
   const [loading, setLoading] = useState(false);
   const [showLogoMenu, setShowLogoMenu] = useState(false);
+  const [activeMode, setActiveMode] = useState<"push" | "deploy">("push");
   const [vercelToken, setVercelToken] = useState(localStorage.getItem("vercel_token") || "");
   const [vercelProjectName, setVercelProjectName] = useState(localStorage.getItem("vercel_project_name") || "");
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
@@ -843,16 +844,26 @@ export default function App() {
                   className="absolute left-0 top-14 z-[60] w-56 bg-white border-4 border-black shadow-[8px_8px_0px_rgba(0,0,0,1)] overflow-hidden"
                 >
                   <button
-                    onClick={handlePush}
-                    disabled={loading || !selectedRepo || files.length === 0}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left font-black uppercase text-sm hover:bg-yellow-300 disabled:opacity-40 disabled:cursor-not-allowed border-b-4 border-black transition-colors"
+                    onClick={() => {
+                      setActiveMode("push");
+                      setShowLogoMenu(false);
+                    }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-3 text-left font-black uppercase text-sm border-b-4 border-black transition-colors",
+                      activeMode === "push" ? "bg-yellow-300" : "hover:bg-yellow-300"
+                    )}
                   >
                     <Send size={18} /> Git Push
                   </button>
                   <button
-                    onClick={handleDeployVercel}
-                    disabled={loading || !selectedRepo || files.length === 0}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left font-black uppercase text-sm hover:bg-black hover:text-white disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    onClick={() => {
+                      setActiveMode("deploy");
+                      setShowLogoMenu(false);
+                    }}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-3 text-left font-black uppercase text-sm transition-colors",
+                      activeMode === "deploy" ? "bg-blue-300" : "hover:bg-black hover:text-white"
+                    )}
                   >
                     <Rocket size={18} /> Deploy Vercel
                   </button>
@@ -860,7 +871,12 @@ export default function App() {
               )}
             </AnimatePresence>
 
-            <h1 className="text-xl font-display font-black tracking-tight hidden sm:block">FAST PUSH</h1>
+            <div className="hidden sm:block">
+              <h1 className="text-xl font-display font-black tracking-tight">FAST PUSH</h1>
+              <p className="text-[10px] font-black uppercase text-gray-500">
+                Mode: {activeMode === "push" ? "Git Push" : "Deploy Vercel"}
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-4">
@@ -883,7 +899,7 @@ export default function App() {
           <Card className="space-y-4">
             <div className="flex items-center justify-between border-b-2 border-black pb-2">
               <div className="flex items-center gap-2 font-black uppercase text-sm">
-                <FolderOpen size={18} /> Konfigurasi Repo
+                <FolderOpen size={18} /> {activeMode === "push" ? "Konfigurasi Git Push" : "Konfigurasi Deploy"}
               </div>
               <div className="flex items-center gap-2">
                 <button 
@@ -945,13 +961,16 @@ export default function App() {
                 <Input value={branch} onChange={(e: any) => setBranch(e.target.value)} placeholder="main" />
               </div>
 
-              <div>
-                <label className="text-xs font-black uppercase mb-1 block">Pesan Commit</label>
-                <Input value={commitMessage} onChange={(e: any) => setCommitMessage(e.target.value)} />
-              </div>
+              {activeMode === "push" && (
+                <div>
+                  <label className="text-xs font-black uppercase mb-1 block">Pesan Commit</label>
+                  <Input value={commitMessage} onChange={(e: any) => setCommitMessage(e.target.value)} />
+                </div>
+              )}
             </div>
           </Card>
 
+          {activeMode === "deploy" && (
           <Card className="bg-blue-100 space-y-4">
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
               <Rocket size={18} /> Deploy Vercel
@@ -986,6 +1005,7 @@ export default function App() {
               DEPLOY TO VERCEL
             </Button>
           </Card>
+          )}
 
           <Card className="bg-yellow-100">
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
@@ -995,7 +1015,9 @@ export default function App() {
               <div className="border-4 border-dashed border-black p-8 text-center bg-white group-hover:bg-yellow-50 transition-colors">
                 <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
                 <p className="text-sm font-black">Klik atau Drag File/ZIP</p>
-                <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Mendukung multi-upload & auto replace</p>
+                <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">
+                {activeMode === "push" ? "Mendukung multi-upload & auto replace" : "File ini dipakai untuk deploy Vercel"}
+              </p>
               </div>
               <input type="file" multiple className="hidden" onChange={handleFileUpload} />
             </label>
@@ -1023,15 +1045,17 @@ export default function App() {
             )}
           </AnimatePresence>
 
-          <Button 
-            variant="yellow" 
-            className="w-full py-4 text-xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={loading || !selectedRepo || files.length === 0}
-            onClick={handlePush}
-          >
-            {loading ? <Loader2 className="animate-spin" /> : <Send />}
-            PUSH TO GITHUB
-          </Button>
+          {activeMode === "push" && (
+            <Button 
+              variant="yellow" 
+              className="w-full py-4 text-xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={loading || !selectedRepo || files.length === 0}
+              onClick={handlePush}
+            >
+              {loading ? <Loader2 className="animate-spin" /> : <Send />}
+              PUSH TO GITHUB
+            </Button>
+          )}
         </div>
 
         {/* Right Column - File List & Editor */}
