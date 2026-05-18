@@ -33,6 +33,8 @@ export default function App() {
   const [showLogoMenu, setShowLogoMenu] = useState(false);
   const [activeMode, setActiveMode] = useState<"push" | "deploy">("push");
   const [vercelProjectName, setVercelProjectName] = useState(localStorage.getItem("vercel_project_name") || "");
+  const [vercelWebUrl, setVercelWebUrl] = useState<string | null>(null);
+  const [vercelImportUrl, setVercelImportUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
 
   // New Repo State
@@ -739,14 +741,15 @@ export default function App() {
     }
 
     const githubRepoUrl = `https://github.com/${selectedRepo.full_name}`;
-    const vercelImportUrl = `https://vercel.com/new/clone?repository-url=${encodeURIComponent(githubRepoUrl)}&project-name=${encodeURIComponent(projectName)}`;
+    const importUrl = `https://vercel.com/new/clone?repository-url=${encodeURIComponent(githubRepoUrl)}&project-name=${encodeURIComponent(projectName)}`;
+    const webUrl = `https://${projectName}.vercel.app`;
 
+    setVercelWebUrl(webUrl);
+    setVercelImportUrl(importUrl);
     setStatus({
       type: "success",
-      message: `Repo ${selectedRepo.full_name} siap dibuat menjadi web. Domain default: ${projectName}.vercel.app`,
+      message: `Link web sudah dibuat di tampilan: ${webUrl}. Jika repo belum pernah tersambung ke Vercel, buka tombol setup Vercel satu kali.`,
     });
-
-    window.open(vercelImportUrl, "_blank", "noopener,noreferrer");
   };
 
   const handlePush = async () => {
@@ -999,6 +1002,35 @@ export default function App() {
               {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
               BUAT WEB VERCEL
             </Button>
+
+            {vercelWebUrl && (
+              <div className="border-4 border-black bg-white p-4 space-y-3 shadow-[6px_6px_0px_rgba(0,0,0,1)]">
+                <div className="flex items-center gap-2 font-black uppercase text-sm">
+                  <Globe size={18} /> Link Website
+                </div>
+                <a
+                  href={vercelWebUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block break-all border-4 border-black bg-green-300 p-3 font-black text-sm hover:bg-green-400 transition-colors"
+                >
+                  {vercelWebUrl}
+                </a>
+                <p className="text-[10px] uppercase font-black text-gray-600 leading-relaxed">
+                  Aplikasi tidak otomatis pindah ke halaman Vercel lagi. Link tampil di sini setelah tombol dibuat.
+                </p>
+                {vercelImportUrl && (
+                  <a
+                    href={vercelImportUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-center border-4 border-black bg-blue-300 p-3 font-black text-xs uppercase hover:bg-blue-400 transition-colors"
+                  >
+                    Setup Deploy Vercel
+                  </a>
+                )}
+              </div>
+            )}
           </Card>
           )}
 
