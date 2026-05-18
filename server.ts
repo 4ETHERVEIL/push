@@ -3,6 +3,7 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
+import crypto from "crypto";
 import axios from "axios";
 
 dotenv.config();
@@ -36,6 +37,17 @@ const getCookie = (req: any, name: string) => {
   return found ? decodeURIComponent(found.substring(name.length + 1)) : "";
 };
 
+
+const setCookie = (req: any, res: any, name: string, value: string, maxAge = 600, httpOnly = true) => {
+  const isHttps = String(req.headers["x-forwarded-proto"] || "").includes("https");
+  const secure = isHttps ? "; Secure" : "";
+  const httpOnlyPart = httpOnly ? "; HttpOnly" : "";
+  res.append("Set-Cookie", `${name}=${encodeURIComponent(value)}; Path=/; SameSite=Lax; Max-Age=${maxAge}${httpOnlyPart}${secure}`);
+};
+
+const generateRandom = (length = 48) => crypto.randomBytes(length).toString("base64url");
+const sha256Base64Url = (value: string) => crypto.createHash("sha256").update(value).digest("base64url");
+
 const setVercelCookie = (req: any, res: any, token: string) => {
   const isHttps = String(req.headers["x-forwarded-proto"] || "").includes("https");
   const secure = isHttps ? "; Secure" : "";
@@ -47,36 +59,59 @@ const getVercelAccessToken = (req: any) => {
   return getCookie(req, "vercel_oauth_token") || process.env.VERCEL_TOKEN || process.env.VITE_VERCEL_TOKEN || "";
 };
 
-const getVercelAuthUrl = (req: any) => {
+const getVercelAuthUrl = (req: any, res: any) => {
   if (!VERCEL_CLIENT_ID) return null;
   const redirectUri = `${getAppUrl(req)}/auth/vercel/callback`;
+  const state = generateRandom(24);
+  const nonce = generateRandom(24);
+  const codeVerifier = generateRandom(48);
+  const codeChallenge = sha256Base64Url(codeVerifier);
+
+  setCookie(req, res, "vercel_oauth_state", state, 600);
+  setCookie(req, res, "vercel_oauth_nonce", nonce, 600);
+  setCookie(req, res, "vercel_oauth_code_verifier", codeVerifier, 600);
+
   const params = new URLSearchParams({
-    client_id: VERCEL_CLIENT_ID,
+    client_id: VERCEL_CLIENT_ID.trim(),
     redirect_uri: redirectUri,
     response_type: "code",
-    state: Math.random().toString(36).substring(7),
+    response_mode: "query",
+    scope: "openid email profile offline_access",
+    state,
+    nonce,
+    code_challenge: codeChallenge,
+    code_challenge_method: "S256",
   });
   return `https://vercel.com/oauth/authorize?${params.toString()}`;
 };
 
-const exchangeVercelCode = async (req: any, code: string) => {
+const exchangeVercelCode = async (req: any, code: string, stateFromQuery?: string) => {
   if (!VERCEL_CLIENT_ID || !VERCEL_CLIENT_SECRET) {
     throw new Error("VERCEL_CLIENT_ID dan VERCEL_CLIENT_SECRET belum dikonfigurasi.");
   }
 
+  const storedState = getCookie(req, "vercel_oauth_state");
+  const codeVerifier = getCookie(req, "vercel_oauth_code_verifier");
+
+  if (!storedState || !stateFromQuery || storedState !== stateFromQuery) {
+    throw new Error("State OAuth Vercel tidak cocok. Ulangi login dari tombol Connect Vercel.");
+  }
+
   const redirectUri = `${getAppUrl(req)}/auth/vercel/callback`;
   const body = new URLSearchParams({
-    client_id: VERCEL_CLIENT_ID,
-    client_secret: VERCEL_CLIENT_SECRET,
+    grant_type: "authorization_code",
+    client_id: VERCEL_CLIENT_ID.trim(),
+    client_secret: VERCEL_CLIENT_SECRET.trim(),
     code,
+    code_verifier: codeVerifier,
     redirect_uri: redirectUri,
   });
 
-  const response = await axios.post("https://api.vercel.com/v2/oauth/access_token", body.toString(), {
+  const response = await axios.post("https://api.vercel.com/login/oauth/token", body.toString(), {
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
   });
 
-  return response.data?.access_token || response.data?.token || "";
+  return response.data?.access_token || "";
 };
 
 async function setupVercelProject(req: any, res: any) {
@@ -260,7 +295,7 @@ async function startServer() {
 
 
   app.get("/api/auth/vercel/url", (req, res) => {
-    const url = getVercelAuthUrl(req);
+    const url = getVercelAuthUrl(req, res);
     if (!url) {
       return res.status(500).json({ error: "VERCEL_CLIENT_ID belum dikonfigurasi. Buat OAuth App/Integration Vercel dulu." });
     }
@@ -272,13 +307,16 @@ async function startServer() {
   });
 
   app.get(["/auth/vercel/callback", "/auth/vercel/callback/"], async (req, res) => {
-    const { code } = req.query;
+    const { code, state } = req.query;
     if (!code) return res.status(400).send("Vercel code not found");
 
     try {
-      const accessToken = await exchangeVercelCode(req, String(code));
+      const accessToken = await exchangeVercelCode(req, String(code), String(state || ""));
       if (!accessToken) throw new Error("Access token Vercel tidak ditemukan dari OAuth response.");
       setVercelCookie(req, res, accessToken);
+      setCookie(req, res, "vercel_oauth_state", "", 0);
+      setCookie(req, res, "vercel_oauth_nonce", "", 0);
+      setCookie(req, res, "vercel_oauth_code_verifier", "", 0);
       res.send(`
         <html>
           <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #FFD600;">
