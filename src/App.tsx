@@ -33,8 +33,8 @@ export default function App() {
   const [showLogoMenu, setShowLogoMenu] = useState(false);
   const [activeMode, setActiveMode] = useState<"push" | "deploy">("push");
   const [vercelProjectName, setVercelProjectName] = useState(localStorage.getItem("vercel_project_name") || "");
-  const [vercelToken, setVercelToken] = useState(localStorage.getItem("vercel_token") || "");
-  const [showVercelTokenInput, setShowVercelTokenInput] = useState(false);
+  const [vercelConnected, setVercelConnected] = useState(false);
+  const [checkingVercel, setCheckingVercel] = useState(false);
   const [vercelWebUrl, setVercelWebUrl] = useState<string | null>(null);
   const [vercelDashboardUrl, setVercelDashboardUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
@@ -136,6 +136,10 @@ export default function App() {
         localStorage.setItem("gh_token", newToken);
         setToken(newToken);
       }
+      if (event.data?.type === "VERCEL_AUTH_SUCCESS") {
+        setVercelConnected(true);
+        setStatus({ type: "success", message: "Vercel berhasil terhubung. Sekarang kamu bisa setup website tanpa input token manual." });
+      }
     };
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
@@ -149,13 +153,6 @@ export default function App() {
     }
   }, [vercelProjectName]);
 
-  useEffect(() => {
-    if (vercelToken.trim()) {
-      localStorage.setItem("vercel_token", vercelToken.trim());
-    } else {
-      localStorage.removeItem("vercel_token");
-    }
-  }, [vercelToken]);
 
   // Fetch Repo Files (Tree)
   const fetchRepoFiles = async (repoFullName: string, branchName: string) => {
@@ -302,11 +299,53 @@ export default function App() {
     }
   };
 
+  const checkVercelConnection = async () => {
+    setCheckingVercel(true);
+    try {
+      const resp = await fetch("/api/auth/vercel/status");
+      const data = await resp.json();
+      setVercelConnected(Boolean(data.connected));
+    } catch (err) {
+      console.error(err);
+      setVercelConnected(false);
+    } finally {
+      setCheckingVercel(false);
+    }
+  };
+
+  useEffect(() => {
+    if (token) {
+      checkVercelConnection();
+    }
+  }, [token]);
+
+  const handleConnectVercel = async () => {
+    try {
+      const resp = await fetch("/api/auth/vercel/url");
+      const data = await resp.json();
+
+      if (data.error) {
+        setStatus({ type: "error", message: data.error });
+        return;
+      }
+
+      if (data.url) {
+        window.open(data.url, "Vercel OAuth", "width=600,height=760");
+      } else {
+        throw new Error("Invalid response from server");
+      }
+    } catch (err: any) {
+      console.error(err);
+      setStatus({ type: "error", message: err.message || "Gagal membuka koneksi Vercel." });
+    }
+  };
+
   const handleLogout = () => {
     localStorage.removeItem("gh_token");
     setToken(null);
     setUser(null);
     setRepos([]);
+    setVercelConnected(false);
   };
 
   const handleCreateRepo = async () => {
@@ -760,7 +799,6 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vercelToken: vercelToken.trim() || undefined,
           projectName,
           repoFullName: selectedRepo.full_name,
           repoId: selectedRepo.id,
@@ -771,13 +809,13 @@ export default function App() {
       const data = await response.json();
 
       if (!response.ok) {
-        if (data.needsToken) {
-          setShowVercelTokenInput(true);
+        if (data.needsVercelAuth) {
+          setVercelConnected(false);
         }
         throw new Error(data.error || "Setup Vercel gagal.");
       }
 
-      setShowVercelTokenInput(false);
+      setVercelConnected(true);
       setVercelWebUrl(data.webUrl || `https://${projectName}.vercel.app`);
       setVercelDashboardUrl(data.dashboardUrl || null);
       setStatus({
@@ -1016,72 +1054,124 @@ export default function App() {
 
           {activeMode === "deploy" && (
           <Card className="bg-blue-100 space-y-4">
-            <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
-              <Rocket size={18} /> Buat Web Vercel
-            </h3>
-            <div className="p-3 border-4 border-black bg-white text-xs font-black uppercase leading-relaxed">
-              Pilih repository GitHub yang ingin dijadikan website, lalu masukkan nama domain default Vercel. Contoh: nama-web.vercel.app
-            </div>
-            <div>
-              <label className="text-xs font-black uppercase mb-1 block">Nama Domain Default</label>
-              <Input
-                value={vercelProjectName}
-                onChange={(e: any) => setVercelProjectName(e.target.value)}
-                placeholder={selectedRepo ? `${selectedRepo.full_name.split("/")[1]}.vercel.app` : "nama-web.vercel.app"}
-              />
-              <p className="text-[10px] uppercase mt-2 text-gray-600 font-black">
-                Boleh isi nama-web atau nama-web.vercel.app. Nama ini akan dipakai sebagai project/domain default Vercel.
-              </p>
-            </div>
-            {showVercelTokenInput && (
-              <div className="border-4 border-black bg-white p-3 space-y-2">
-                <label className="text-xs font-black uppercase mb-1 block">Vercel Token</label>
-                <Input
-                  type="password"
-                  value={vercelToken}
-                  onChange={(e: any) => setVercelToken(e.target.value)}
-                  placeholder="Masukkan token Vercel untuk setup otomatis"
-                />
-                <p className="text-[10px] uppercase text-gray-600 font-black leading-relaxed">
-                  Dibutuhkan satu kali untuk menghubungkan repo GitHub ke Vercel secara otomatis lewat API. Jika VERCEL_TOKEN sudah dipasang di environment server, input ini tidak akan diperlukan.
-                </p>
-              </div>
-            )}
-            <Button
-              variant="yellow"
-              className="w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={loading || !selectedRepo}
-              onClick={handleVercelPushDeploy}
-            >
-              {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
-              SETUP OTOMATIS VERCEL
-            </Button>
-
-            {vercelWebUrl && (
-              <div className="border-4 border-black bg-white p-4 space-y-3 shadow-[6px_6px_0px_rgba(0,0,0,1)]">
-                <div className="flex items-center gap-2 font-black uppercase text-sm">
-                  <Globe size={18} /> Link Website
-                </div>
-                <a
-                  href={vercelWebUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="block break-all border-4 border-black bg-green-300 p-3 font-black text-sm hover:bg-green-400 transition-colors"
+            {!vercelConnected ? (
+              <div className="space-y-5 text-center">
+                <motion.div
+                  initial={{ scale: 0.92, opacity: 0 }}
+                  animate={{ scale: 1, opacity: 1 }}
+                  className="mx-auto w-20 h-20 bg-black border-4 border-black rounded-2xl flex items-center justify-center rotate-3 shadow-[8px_8px_0px_rgba(0,0,0,1)]"
                 >
-                  {vercelWebUrl}
-                </a>
-                <p className="text-[10px] uppercase font-black text-gray-600 leading-relaxed">
-                  Repo sudah disiapkan otomatis ke Vercel. Link website tampil di sini tanpa redirect.
-                </p>
-                {vercelDashboardUrl && (
-                  <a
-                    href={vercelDashboardUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="block text-center border-4 border-black bg-blue-300 p-3 font-black text-xs uppercase hover:bg-blue-400 transition-colors"
+                  <Rocket className="w-10 h-10 text-blue-300" />
+                </motion.div>
+
+                <div className="space-y-2">
+                  <h3 className="font-display font-black text-3xl uppercase tracking-tighter">
+                    Login Vercel
+                  </h3>
+                  <p className="text-xs font-black uppercase text-gray-600 leading-relaxed">
+                    Masuk ke Vercel dulu untuk membuat website otomatis dari repo GitHub. Tidak ada input token manual di tampilan.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+                  <div className="border-4 border-black bg-white p-3 shadow-[4px_4px_0px_rgba(0,0,0,1)]">
+                    <p className="text-[10px] font-black uppercase text-gray-500">Step 1</p>
+                    <p className="font-black text-xs uppercase">Login Vercel</p>
+                  </div>
+                  <div className="border-4 border-black bg-white p-3 shadow-[4px_4px_0px_rgba(0,0,0,1)]">
+                    <p className="text-[10px] font-black uppercase text-gray-500">Step 2</p>
+                    <p className="font-black text-xs uppercase">Pilih Repo</p>
+                  </div>
+                  <div className="border-4 border-black bg-white p-3 shadow-[4px_4px_0px_rgba(0,0,0,1)]">
+                    <p className="text-[10px] font-black uppercase text-gray-500">Step 3</p>
+                    <p className="font-black text-xs uppercase">Buat Web</p>
+                  </div>
+                </div>
+
+                <button
+                  onClick={handleConnectVercel}
+                  disabled={checkingVercel || loading}
+                  className="w-full border-4 border-black bg-black text-white px-4 py-4 font-black uppercase text-lg hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-3 shadow-[6px_6px_0px_rgba(0,0,0,1)]"
+                >
+                  {checkingVercel ? <Loader2 className="animate-spin" /> : <Lock />}
+                  LOGIN / CONNECT VERCEL
+                </button>
+
+                <div className="border-4 border-black bg-yellow-200 p-3 text-left">
+                  <p className="text-[10px] uppercase font-black text-gray-700 leading-relaxed">
+                    Setelah login berhasil, tampilan Vercel Deploy akan berubah menjadi form pilih repo + nama domain, lalu link website langsung muncul di aplikasi.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3 border-4 border-black bg-green-200 p-3">
+                  <div className="flex items-center gap-2 font-black uppercase text-xs">
+                    <CheckCircle2 size={18} /> Vercel Sudah Login
+                  </div>
+                  <button
+                    onClick={handleConnectVercel}
+                    className="border-4 border-black bg-white px-3 py-2 font-black uppercase text-xs hover:bg-blue-300 transition-colors"
                   >
-                    Buka Dashboard Project
-                  </a>
+                    Login Ulang
+                  </button>
+                </div>
+
+                <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
+                  <Rocket size={18} /> Buat Web Vercel
+                </h3>
+                <div className="p-3 border-4 border-black bg-white text-xs font-black uppercase leading-relaxed">
+                  Pilih repository GitHub di atas, lalu masukkan nama domain default. Contoh: nama-web.vercel.app
+                </div>
+
+                <div>
+                  <label className="text-xs font-black uppercase mb-1 block">Nama Domain Default</label>
+                  <Input
+                    value={vercelProjectName}
+                    onChange={(e: any) => setVercelProjectName(e.target.value)}
+                    placeholder={selectedRepo ? `${selectedRepo.full_name.split("/")[1]}.vercel.app` : "nama-web.vercel.app"}
+                  />
+                  <p className="text-[10px] uppercase mt-2 text-gray-600 font-black">
+                    Boleh isi nama-web atau nama-web.vercel.app. Nama ini akan dipakai sebagai project/domain default Vercel.
+                  </p>
+                </div>
+                <Button
+                  variant="yellow"
+                  className="w-full flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading || !selectedRepo}
+                  onClick={handleVercelPushDeploy}
+                >
+                  {loading ? <Loader2 className="animate-spin" /> : <Rocket />}
+                  BUAT WEB VERCEL
+                </Button>
+
+                {vercelWebUrl && (
+                  <div className="border-4 border-black bg-white p-4 space-y-3 shadow-[6px_6px_0px_rgba(0,0,0,1)]">
+                    <div className="flex items-center gap-2 font-black uppercase text-sm">
+                      <Globe size={18} /> Link Website
+                    </div>
+                    <a
+                      href={vercelWebUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block break-all border-4 border-black bg-green-300 p-3 font-black text-sm hover:bg-green-400 transition-colors"
+                    >
+                      {vercelWebUrl}
+                    </a>
+                    <p className="text-[10px] uppercase font-black text-gray-600 leading-relaxed">
+                      Repo sudah disiapkan otomatis ke Vercel. Link website tampil di sini tanpa redirect.
+                    </p>
+                    {vercelDashboardUrl && (
+                      <a
+                        href={vercelDashboardUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block text-center border-4 border-black bg-blue-300 p-3 font-black text-xs uppercase hover:bg-blue-400 transition-colors"
+                      >
+                        Buka Dashboard Project
+                      </a>
+                    )}
+                  </div>
                 )}
               </div>
             )}
