@@ -863,7 +863,7 @@ export default function App() {
                 <span className="text-blue-600">Fast Push</span>
               </h1>
               <p className="text-gray-600 font-bold px-4">
-                Push banyak file ke GitHub dalam 1 commit — Sekarang dengan ZIP Extract & File Editor!
+                Push banyak file ke GitHub dalam 1 commit â Sekarang dengan ZIP Extract & File Editor!
               </p>
             </div>
             <Button variant="yellow" className="w-full text-xl py-4" onClick={handleLogin}>
