@@ -84,6 +84,16 @@ export default function App() {
       }
     };
 
+    // Anti-Debugging Time Trap
+    const antiDebug = setInterval(() => {
+      const start = new Date().getTime();
+      debugger;
+      const end = new Date().getTime();
+      if (end - start > 100) {
+        setIsBanned(true);
+      }
+    }, 1000);
+
     window.addEventListener("contextmenu", handleContextMenu);
     window.addEventListener("keydown", handleKeyDown);
     const interval = setInterval(detectDevTools, 1000);
@@ -92,6 +102,7 @@ export default function App() {
       window.removeEventListener("contextmenu", handleContextMenu);
       window.removeEventListener("keydown", handleKeyDown);
       clearInterval(interval);
+      clearInterval(antiDebug);
     };
   }, []);
 
