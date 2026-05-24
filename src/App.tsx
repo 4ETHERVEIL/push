@@ -461,34 +461,52 @@ export default function App() {
     const uploadedFiles = e.target.files;
     if (!uploadedFiles) return;
 
+    let newFilesList: GitHubFile[] = [];
+
     for (let i = 0; i < uploadedFiles.length; i++) {
       const file = uploadedFiles[i];
-      if (file.name.endsWith(".zip")) {
+      const filePath = file.webkitRelativePath || file.name;
+
+      if (file.name.endsWith(".zip") && !file.webkitRelativePath) {
         try {
           setCurrentDirectory(""); // Reset for safety
           const zip = await JSZip.loadAsync(file);
-          const extractedFiles: GitHubFile[] = [];
           const promises = Object.keys(zip.files).map(async (filename) => {
             const zipFile = zip.files[filename];
             if (!zipFile.dir) {
               const content = await zipFile.async("string");
-              extractedFiles.push({ path: filename, content });
+              newFilesList.push({ path: filename, content });
             }
           });
           await Promise.all(promises);
-          setFiles(prev => [...prev, ...extractedFiles]);
         } catch (err) {
           console.error("ZIP load error:", err);
           setStatus({ type: "error", message: "Gagal memproses file ZIP." });
         }
       } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setFiles(prev => [...prev, { path: file.name, content: event.target?.result as string }]);
-        };
-        reader.readAsText(file);
+        const content = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.readAsText(file);
+        });
+        newFilesList.push({ path: filePath, content });
       }
     }
+
+    setFiles(prev => {
+      const merged = [...prev];
+      newFilesList.forEach(newFile => {
+        const existingIndex = merged.findIndex(f => f.path === newFile.path);
+        if (existingIndex >= 0) {
+          merged[existingIndex] = newFile; // Update existing
+        } else {
+          merged.push(newFile); // Add new
+        }
+      });
+      return merged;
+    });
+
+    e.target.value = ""; // Reset input
   };
 
   const removeFile = (index: number) => {
@@ -769,16 +787,34 @@ export default function App() {
 
           <Card className="bg-yellow-100">
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
-              <Upload size={18} /> Upload File
+              <Upload size={18} /> Upload Data
             </h3>
-            <label className="group block cursor-pointer">
-              <div className="border-4 border-dashed border-black p-8 text-center bg-white group-hover:bg-yellow-50 transition-colors">
-                <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
-                <p className="text-sm font-black">Klik atau Drag File/ZIP</p>
-                <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Mendukung multi-upload</p>
-              </div>
-              <input type="file" multiple className="hidden" onChange={handleFileUpload} />
-            </label>
+            <div className="grid grid-cols-2 gap-4">
+              <label className="group block cursor-pointer">
+                <div className="h-full border-4 border-dashed border-black p-6 text-center bg-white group-hover:bg-yellow-50 transition-colors flex flex-col items-center justify-center">
+                  <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
+                  <p className="text-sm font-black">Upload File / ZIP</p>
+                  <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Pilih banyak file</p>
+                </div>
+                <input type="file" multiple className="hidden" onChange={handleFileUpload} />
+              </label>
+              <label className="group block cursor-pointer">
+                <div className="h-full border-4 border-dashed border-black p-6 text-center bg-white group-hover:bg-yellow-50 transition-colors flex flex-col items-center justify-center">
+                  <FolderOpen className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
+                  <p className="text-sm font-black">Upload Folder</p>
+                  <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Seluruh isi folder</p>
+                </div>
+                <input 
+                  type="file" 
+                  // @ts-ignore
+                  webkitdirectory="true" 
+                  directory="true" 
+                  multiple 
+                  className="hidden" 
+                  onChange={handleFileUpload} 
+                />
+              </label>
+            </div>
           </Card>
 
           <AnimatePresence>
