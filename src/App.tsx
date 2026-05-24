@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Octokit } from "octokit";
 import JSZip from "jszip";
-import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CheckSquare, Square } from "lucide-react";
+import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
@@ -9,7 +9,6 @@ import { cn } from "./lib/utils";
 interface GitHubFile {
   path: string;
   content: string;
-  sha?: string;
 }
 
 interface Repository {
@@ -27,7 +26,7 @@ export default function App() {
   const [files, setFiles] = useState<GitHubFile[]>([]);
   const [fetchingFiles, setFetchingFiles] = useState(false);
   const [editingFile, setEditingFile] = useState<number | null>(null);
-  const [selectedFilePaths, setSelectedFilePaths] = useState<Set<string>>(new Set());
+  const [selectedFileIndexes, setSelectedFileIndexes] = useState<number[]>([]);
   const [commitMessage, setCommitMessage] = useState("Feat: push from GitHub Fast Push");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
@@ -140,7 +139,7 @@ export default function App() {
     setFetchingFiles(true);
     setFiles([]); // Reset files while fetching
     setEditingFile(null); // Reset selection to prevent crashes
-    setSelectedFilePaths(new Set());
+    setSelectedFileIndexes([]); // Reset selections
     const octokit = new Octokit({ auth: token });
     const [owner, repo] = repoFullName.split("/");
 
@@ -337,7 +336,6 @@ export default function App() {
           setStatus({ type: "success", message: `Repository ${selectedRepo.full_name} deleted.` });
           setSelectedRepo(null);
           setFiles([]);
-          setSelectedFilePaths(new Set());
           await fetchRepos(token);
         } catch (err: any) {
           console.error(err);
@@ -387,6 +385,7 @@ export default function App() {
           });
 
           setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
+          setSelectedFileIndexes(prev => prev.filter(i => i !== index));
           
           // Force refresh from GitHub after deletion to sync state
           await fetchRepoFiles(selectedRepo.full_name, branch);
@@ -400,164 +399,100 @@ export default function App() {
     });
   };
 
-  const normalizeUploadPath = (path: string) => path.replace(/\\/g, "/").replace(/^\/+/, "");
-
-  const upsertUploadedFiles = (incomingFiles: GitHubFile[]) => {
-    const normalizedIncoming = incomingFiles
-      .map(file => ({ ...file, path: normalizeUploadPath(file.path) }))
-      .filter(file => file.path.trim() !== "");
-
-    if (normalizedIncoming.length === 0) return;
-
-    setFiles(prev => {
-      const fileMap = new Map<string, GitHubFile>();
-      prev.forEach(file => fileMap.set(file.path, file));
-
-      normalizedIncoming.forEach(file => {
-        const existingFile = fileMap.get(file.path);
-        fileMap.set(file.path, {
-          ...existingFile,
-          ...file,
-          // Keep the GitHub SHA when replacing an existing repo file so push updates it instead of making duplicates.
-          sha: existingFile?.sha,
-        });
-      });
-
-      return Array.from(fileMap.values());
-    });
-
-    setStatus({
-      type: "success",
-      message: `${normalizedIncoming.length} file berhasil ditambahkan/diupdate. File dengan nama/path sama otomatis ditimpa.`,
-    });
-  };
-
-  const readFileAsText = (file: File) => new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = (event) => resolve((event.target?.result as string) || "");
-    reader.onerror = () => reject(reader.error);
-    reader.readAsText(file);
-  });
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const uploadedFiles = Array.from(e.target.files || []) as File[];
-    if (uploadedFiles.length === 0) return;
-
-    try {
-      const incomingFiles: GitHubFile[] = [];
-
-      for (const file of uploadedFiles) {
-        if (file.name.toLowerCase().endsWith(".zip")) {
-          const zip = await JSZip.loadAsync(file);
-          const extractedFiles = await Promise.all(
-            Object.keys(zip.files).map(async (filename) => {
-              const zipFile = zip.files[filename];
-              if (zipFile.dir) return null;
-              const content = await zipFile.async("string");
-              return { path: filename, content };
-            })
-          );
-          incomingFiles.push(...extractedFiles.filter(Boolean) as GitHubFile[]);
-        } else {
-          const content = await readFileAsText(file);
-          incomingFiles.push({ path: file.name, content });
-        }
-      }
-
-      upsertUploadedFiles(incomingFiles);
-    } catch (err: any) {
-      console.error("Upload error:", err);
-      setStatus({ type: "error", message: `Gagal memproses upload: ${err?.message || "file tidak valid"}.` });
-    } finally {
-      // Allow uploading the same file again and still trigger onChange.
-      e.target.value = "";
+  const handleDeleteSelected = async () => {
+    if (selectedFileIndexes.length === 0 || !selectedRepo || !token) return;
+    
+    // Check if we are only deleting local files
+    const filesToDelete = selectedFileIndexes.map(i => ({ index: i, file: files[i] }));
+    const githubFiles = filesToDelete.filter(f => (f.file as any).sha);
+    const localFiles = filesToDelete.filter(f => !(f.file as any).sha);
+    
+    if (githubFiles.length === 0) {
+      // All local files, simply remove them
+      setFiles(prev => prev.filter((_, i) => !selectedFileIndexes.includes(i)));
+      setSelectedFileIndexes([]);
+      setStatus({ type: "success", message: `Berhasil menghapus ${localFiles.length} file lokal.` });
+      return;
     }
-  };
-
-  const removeFile = (index: number) => {
-    const targetPath = files[index]?.path;
-    setFiles(prev => prev.filter((_, i) => i !== index));
-    if (targetPath) {
-      setSelectedFilePaths(prev => {
-        const next = new Set(prev);
-        next.delete(targetPath);
-        return next;
-      });
-    }
-    if (editingFile === index) setEditingFile(null);
-  };
-
-  const toggleFileSelection = (path: string) => {
-    setSelectedFilePaths(prev => {
-      const next = new Set(prev);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
-      }
-      return next;
-    });
-  };
-
-  const toggleSelectAllFiles = () => {
-    setSelectedFilePaths(prev => {
-      if (files.length > 0 && files.every(file => prev.has(file.path))) {
-        return new Set();
-      }
-      return new Set(files.map(file => file.path));
-    });
-  };
-
-  const handleDeleteSelectedFiles = () => {
-    const selectedFiles = files.filter(file => selectedFilePaths.has(file.path));
-    if (selectedFiles.length === 0 || !selectedRepo || !token) return;
-
-    const githubFiles = selectedFiles.filter(file => file.sha);
-    const localFiles = selectedFiles.filter(file => !file.sha);
-
+    
     setConfirmModal({
       isOpen: true,
-      title: "HAPUS FILE TERPILIH",
-      message: `Hapus ${selectedFiles.length} file terpilih? ${githubFiles.length > 0 ? `${githubFiles.length} file akan dihapus permanen dari GitHub.` : ""} ${localFiles.length > 0 ? `${localFiles.length} file akan dihapus dari daftar upload.` : ""}`,
-      confirmText: "HAPUS TERPILIH",
+      title: "HAPUS BANYAK FILE",
+      message: `Apakah Anda yakin ingin menghapus ${selectedFileIndexes.length} file? Ada ${githubFiles.length} file yang akan DITETAPKAN DIHAPUS DARI GITHUB secara permanen!`,
+      confirmText: "HAPUS SEMUA",
       confirmVariant: "danger",
       onConfirm: async () => {
         setLoading(true);
-        setStatus({ type: "info", message: `Menghapus ${selectedFiles.length} file terpilih...` });
+        setStatus({ type: "info", message: `Menghapus ${githubFiles.length} file dari GitHub...` });
 
         try {
           const octokit = new Octokit({ auth: token });
           const [owner, repo] = selectedRepo.full_name.split("/");
-
-          for (const file of githubFiles) {
-            await octokit.rest.repos.deleteFile({
+          
+          // Delete sequentially to avoid rate limits or conflicts
+          // For a true batch we would use the git tree API to create a new tree, but consecutive deleteFile works for simple needs.
+          for (const gf of githubFiles) {
+             await octokit.rest.repos.deleteFile({
               owner,
               repo,
-              path: file.path,
-              message: `Delete: ${file.path} via Fast Push`,
-              sha: file.sha!,
-              branch,
+              path: gf.file.path,
+              message: `Delete: ${gf.file.path} via Fast Push`,
+              sha: (gf.file as any).sha,
+              branch: branch,
             });
           }
 
-          setSelectedFilePaths(new Set());
-          setEditingFile(null);
-
-          if (githubFiles.length > 0) {
-            await fetchRepoFiles(selectedRepo.full_name, branch);
-          } else {
-            setFiles(prev => prev.filter(file => !selectedFilePaths.has(file.path)));
-          }
-
-          setStatus({ type: "success", message: `${selectedFiles.length} file terpilih berhasil dihapus.` });
+          setStatus({ type: "success", message: `Berhasil menghapus ${selectedFileIndexes.length} file.` });
+          setSelectedFileIndexes([]);
+          
+          // Force refresh from GitHub after deletion to sync state
+          await fetchRepoFiles(selectedRepo.full_name, branch);
         } catch (err: any) {
           console.error(err);
-          setStatus({ type: "error", message: `Gagal menghapus file terpilih: ${err.message}` });
+          setStatus({ type: "error", message: `Failed to delete files: ${err.message}` });
         } finally {
           setLoading(false);
         }
       }
     });
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const uploadedFiles = e.target.files;
+    if (!uploadedFiles) return;
+
+    for (let i = 0; i < uploadedFiles.length; i++) {
+      const file = uploadedFiles[i];
+      if (file.name.endsWith(".zip")) {
+        try {
+          const zip = await JSZip.loadAsync(file);
+          const extractedFiles: GitHubFile[] = [];
+          const promises = Object.keys(zip.files).map(async (filename) => {
+            const zipFile = zip.files[filename];
+            if (!zipFile.dir) {
+              const content = await zipFile.async("string");
+              extractedFiles.push({ path: filename, content });
+            }
+          });
+          await Promise.all(promises);
+          setFiles(prev => [...prev, ...extractedFiles]);
+        } catch (err) {
+          console.error("ZIP load error:", err);
+          setStatus({ type: "error", message: "Gagal memproses file ZIP." });
+        }
+      } else {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          setFiles(prev => [...prev, { path: file.name, content: event.target?.result as string }]);
+        };
+        reader.readAsText(file);
+      }
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+    if (editingFile === index) setEditingFile(null);
   };
 
   const updateFileContent = (content: string) => {
@@ -641,9 +576,6 @@ export default function App() {
       setLoading(false);
     }
   };
-
-  const selectedFileCount = selectedFilePaths.size;
-  const isAllFilesSelected = files.length > 0 && files.every(file => selectedFilePaths.has(file.path));
 
   if (!token) {
     return (
@@ -851,38 +783,41 @@ export default function App() {
         {/* Right Column - File List & Editor */}
         <div className="lg:col-span-8 space-y-6">
           <Card className="min-h-[600px] flex flex-col p-0 overflow-hidden">
-            <div className="p-4 border-b-4 border-black bg-black text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="p-4 border-b-4 border-black bg-black text-white flex items-center justify-between">
               <h3 className="font-display font-black uppercase text-lg tracking-wider">File Manager</h3>
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
                 {fetchingFiles && <Loader2 className="animate-spin w-4 h-4 text-yellow-400" />}
                 <span className="text-xs bg-yellow-400 text-black px-2 py-1 rounded font-bold">{files.length} FILES</span>
-                {selectedFileCount > 0 && (
-                  <span className="text-xs bg-blue-400 text-black px-2 py-1 rounded font-bold">{selectedFileCount} DIPILIH</span>
-                )}
               </div>
             </div>
 
             <div className="flex-1 grid grid-cols-1 md:grid-cols-2">
               {/* File List */}
-              <div className="border-r-0 md:border-r-4 border-black overflow-y-auto max-h-[500px]">
-                {files.length > 0 && !fetchingFiles && (
-                  <div className="sticky top-0 z-10 bg-white border-b-4 border-black p-3 flex items-center justify-between gap-2">
-                    <button
-                      type="button"
-                      onClick={toggleSelectAllFiles}
-                      className="flex items-center gap-2 text-[10px] font-black uppercase border-2 border-black px-2 py-1 rounded hover:bg-yellow-100 transition-colors"
-                    >
-                      {isAllFilesSelected ? <CheckSquare size={16} /> : <Square size={16} />}
-                      {isAllFilesSelected ? "Batal Pilih" : "Pilih Semua"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleDeleteSelectedFiles}
-                      disabled={selectedFileCount === 0 || loading}
-                      className="flex items-center gap-2 text-[10px] font-black uppercase border-2 border-black px-2 py-1 rounded bg-red-500 text-white hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              <div className="border-r-0 md:border-r-4 border-black overflow-y-auto max-h-[500px] bg-white relative">
+                {!fetchingFiles && files.length > 0 && (
+                  <div className="p-3 border-b-4 border-black flex items-center justify-between bg-white sticky top-0 z-10">
+                    <label className="flex items-center gap-2 cursor-pointer border-2 border-black px-3 py-1.5 font-bold text-xs uppercase hover:bg-gray-100 transition-colors">
+                      <input 
+                        type="checkbox" 
+                        className="w-4 h-4 accent-black cursor-pointer"
+                        checked={selectedFileIndexes.length === files.length && files.length > 0}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedFileIndexes(files.map((_, i) => i));
+                          } else {
+                            setSelectedFileIndexes([]);
+                          }
+                        }}
+                      />
+                      PILIH SEMUA
+                    </label>
+                    <button 
+                      disabled={selectedFileIndexes.length === 0}
+                      onClick={handleDeleteSelected}
+                      className="flex items-center gap-2 border-2 border-red-500 bg-red-200 text-red-600 px-3 py-1.5 font-bold text-xs uppercase disabled:opacity-50 disabled:cursor-not-allowed hover:bg-red-300 transition-colors"
                     >
                       <Trash2 size={16} />
-                      Hapus Terpilih
+                      HAPUS TERPILIH
                     </button>
                   </div>
                 )}
@@ -899,52 +834,49 @@ export default function App() {
                 ) : (
                   <div className="divide-y-4 divide-black">
                     {files.map((file, idx) => {
-                      const isSelected = selectedFilePaths.has(file.path);
-
+                      const isSelected = selectedFileIndexes.includes(idx);
                       return (
-                        <div 
-                          key={`${file.path}-${idx}`}
-                          className={cn(
-                            "p-4 flex items-center gap-3 cursor-pointer group transition-colors",
-                            editingFile === idx ? "bg-yellow-200" : isSelected ? "bg-blue-100" : "hover:bg-gray-100"
-                          )}
-                          onClick={() => {
-                            setEditingFile(idx);
-                            fetchFileContent(idx);
+                      <div 
+                        key={idx}
+                        className={cn(
+                          "p-4 flex items-center gap-3 cursor-pointer group transition-colors",
+                          editingFile === idx ? "bg-yellow-200" : isSelected ? "bg-blue-50" : "hover:bg-gray-100"
+                        )}
+                        onClick={() => {
+                          setEditingFile(idx);
+                          fetchFileContent(idx);
+                        }}
+                      >
+                        <input 
+                          type="checkbox"
+                          className="w-5 h-5 accent-black cursor-pointer shrink-0"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            if (e.target.checked) {
+                              setSelectedFileIndexes(prev => [...prev, idx]);
+                            } else {
+                              setSelectedFileIndexes(prev => prev.filter(i => i !== idx));
+                            }
                           }}
-                        >
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleFileSelection(file.path);
+                        />
+                        <FileText size={20} className={editingFile === idx ? "text-black shrink-0" : "text-gray-400 shrink-0"} />
+                        <span className="flex-1 font-bold text-sm truncate">{file.path}</span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button 
+                            onClick={(e) => { 
+                              e.stopPropagation(); 
+                              handleDeleteFileFromGitHub(idx); 
                             }}
-                            className={cn(
-                              "p-1 border-2 border-black rounded bg-white hover:bg-yellow-100 transition-colors",
-                              isSelected && "bg-blue-400 text-black"
-                            )}
-                            title={isSelected ? "Batalkan pilihan" : "Pilih file"}
+                            className="p-2 border-2 border-transparent hover:border-red-500 hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all rounded-lg"
+                            title={(file as any).sha ? "Hapus dari GitHub Permanen" : "Hapus dari daftar"}
                           >
-                            {isSelected ? <CheckSquare size={18} /> : <Square size={18} />}
+                            <Trash2 size={18} />
                           </button>
-                          <FileText size={20} className={editingFile === idx ? "text-black" : "text-gray-400"} />
-                          <span className="flex-1 font-bold text-sm truncate">{file.path}</span>
-                          <div className="flex items-center gap-2">
-                            <button 
-                              onClick={(e) => { 
-                                e.stopPropagation(); 
-                                handleDeleteFileFromGitHub(idx); 
-                              }}
-                              className="p-2 border-2 border-transparent hover:border-red-500 hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all rounded-lg"
-                              title={(file as any).sha ? "Hapus dari GitHub Permanen" : "Hapus dari daftar"}
-                            >
-                              <Trash2 size={18} />
-                            </button>
-                            <ChevronRight size={16} className="text-gray-300" />
-                          </div>
+                          <ChevronRight size={16} className="text-gray-300" />
                         </div>
-                      );
-                    })}
+                      </div>
+                    )})}
                   </div>
                 )}
               </div>
