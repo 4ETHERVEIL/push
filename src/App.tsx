@@ -493,16 +493,29 @@ export default function App() {
       }
     }
 
+    let updatedCount = 0;
+    let addedCount = 0;
+
     setFiles(prev => {
       const merged = [...prev];
       newFilesList.forEach(newFile => {
         const existingIndex = merged.findIndex(f => f.path === newFile.path);
         if (existingIndex >= 0) {
           merged[existingIndex] = newFile; // Update existing
+          updatedCount++;
         } else {
           merged.push(newFile); // Add new
+          addedCount++;
         }
       });
+
+      // Show notification after we successfully counted
+      if (updatedCount > 0) {
+        setTimeout(() => setStatus({ type: "success", message: `Berhasil upload: ${addedCount} file baru, ${updatedCount} file diupdate.` }), 0);
+      } else if (addedCount > 0) {
+        setTimeout(() => setStatus({ type: "success", message: `Berhasil upload: ${addedCount} file baru.` }), 0);
+      }
+
       return merged;
     });
 
@@ -789,32 +802,14 @@ export default function App() {
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
               <Upload size={18} /> Upload Data
             </h3>
-            <div className="grid grid-cols-2 gap-4">
-              <label className="group block cursor-pointer">
-                <div className="h-full border-4 border-dashed border-black p-6 text-center bg-white group-hover:bg-yellow-50 transition-colors flex flex-col items-center justify-center">
-                  <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
-                  <p className="text-sm font-black">Upload File / ZIP</p>
-                  <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Pilih banyak file</p>
-                </div>
-                <input type="file" multiple className="hidden" onChange={handleFileUpload} />
-              </label>
-              <label className="group block cursor-pointer">
-                <div className="h-full border-4 border-dashed border-black p-6 text-center bg-white group-hover:bg-yellow-50 transition-colors flex flex-col items-center justify-center">
-                  <FolderOpen className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
-                  <p className="text-sm font-black">Upload Folder</p>
-                  <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Seluruh isi folder</p>
-                </div>
-                <input 
-                  type="file" 
-                  // @ts-ignore
-                  webkitdirectory="true" 
-                  directory="true" 
-                  multiple 
-                  className="hidden" 
-                  onChange={handleFileUpload} 
-                />
-              </label>
-            </div>
+            <label className="group block cursor-pointer">
+              <div className="border-4 border-dashed border-black p-8 text-center bg-white group-hover:bg-yellow-50 transition-colors">
+                <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
+                <p className="text-sm font-black">Klik atau Drag File/ZIP</p>
+                <p className="text-[10px] uppercase mt-2 text-gray-500 font-black">Mendukung multi-upload</p>
+              </div>
+              <input type="file" multiple className="hidden" onChange={handleFileUpload} />
+            </label>
           </Card>
 
           <AnimatePresence>
