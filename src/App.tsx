@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Octokit } from "octokit";
 import JSZip from "jszip";
-import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock } from "lucide-react";
+import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
@@ -26,6 +26,7 @@ export default function App() {
   const [files, setFiles] = useState<GitHubFile[]>([]);
   const [fetchingFiles, setFetchingFiles] = useState(false);
   const [editingFile, setEditingFile] = useState<number | null>(null);
+  const [currentDirectory, setCurrentDirectory] = useState("");
   const [selectedFileIndexes, setSelectedFileIndexes] = useState<number[]>([]);
   const [commitMessage, setCommitMessage] = useState("Feat: push from GitHub Fast Push");
   const [loading, setLoading] = useState(false);
@@ -140,6 +141,7 @@ export default function App() {
     setFiles([]); // Reset files while fetching
     setEditingFile(null); // Reset selection to prevent crashes
     setSelectedFileIndexes([]); // Reset selections
+    setCurrentDirectory(""); // Reset directory view
     const octokit = new Octokit({ auth: token });
     const [owner, repo] = repoFullName.split("/");
 
@@ -399,18 +401,18 @@ export default function App() {
     });
   };
 
-  const handleDeleteSelected = async () => {
-    if (selectedFileIndexes.length === 0 || !selectedRepo || !token) return;
+  const handleBatchDelete = async (indices: number[]) => {
+    if (indices.length === 0 || !selectedRepo || !token) return;
     
     // Check if we are only deleting local files
-    const filesToDelete = selectedFileIndexes.map(i => ({ index: i, file: files[i] }));
+    const filesToDelete = indices.map(i => ({ index: i, file: files[i] }));
     const githubFiles = filesToDelete.filter(f => (f.file as any).sha);
     const localFiles = filesToDelete.filter(f => !(f.file as any).sha);
     
     if (githubFiles.length === 0) {
       // All local files, simply remove them
-      setFiles(prev => prev.filter((_, i) => !selectedFileIndexes.includes(i)));
-      setSelectedFileIndexes([]);
+      setFiles(prev => prev.filter((_, i) => !indices.includes(i)));
+      setSelectedFileIndexes(prev => prev.filter(i => !indices.includes(i)));
       setStatus({ type: "success", message: `Berhasil menghapus ${localFiles.length} file lokal.` });
       return;
     }
@@ -418,7 +420,7 @@ export default function App() {
     setConfirmModal({
       isOpen: true,
       title: "HAPUS BANYAK FILE",
-      message: `Apakah Anda yakin ingin menghapus ${selectedFileIndexes.length} file? Ada ${githubFiles.length} file yang akan DITETAPKAN DIHAPUS DARI GITHUB secara permanen!`,
+      message: `Apakah Anda yakin ingin menghapus ${indices.length} file? Ada ${githubFiles.length} file yang akan DITETAPKAN DIHAPUS DARI GITHUB secara permanen!`,
       confirmText: "HAPUS SEMUA",
       confirmVariant: "danger",
       onConfirm: async () => {
@@ -430,7 +432,6 @@ export default function App() {
           const [owner, repo] = selectedRepo.full_name.split("/");
           
           // Delete sequentially to avoid rate limits or conflicts
-          // For a true batch we would use the git tree API to create a new tree, but consecutive deleteFile works for simple needs.
           for (const gf of githubFiles) {
              await octokit.rest.repos.deleteFile({
               owner,
@@ -442,8 +443,8 @@ export default function App() {
             });
           }
 
-          setStatus({ type: "success", message: `Berhasil menghapus ${selectedFileIndexes.length} file.` });
-          setSelectedFileIndexes([]);
+          setStatus({ type: "success", message: `Berhasil menghapus ${indices.length} file.` });
+          setSelectedFileIndexes(prev => prev.filter(i => !indices.includes(i)));
           
           // Force refresh from GitHub after deletion to sync state
           await fetchRepoFiles(selectedRepo.full_name, branch);
@@ -457,6 +458,20 @@ export default function App() {
     });
   };
 
+  const handleDeleteSelected = () => {
+    handleBatchDelete(selectedFileIndexes);
+  };
+
+  const handleDeleteFolder = (folderPath: string) => {
+    const indices: number[] = [];
+    for (let i = 0; i < files.length; i++) {
+      if (files[i].path.startsWith(folderPath + '/')) {
+        indices.push(i);
+      }
+    }
+    handleBatchDelete(indices);
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = e.target.files;
     if (!uploadedFiles) return;
@@ -465,6 +480,7 @@ export default function App() {
       const file = uploadedFiles[i];
       if (file.name.endsWith(".zip")) {
         try {
+          setCurrentDirectory(""); // Reset for safety
           const zip = await JSZip.loadAsync(file);
           const extractedFiles: GitHubFile[] = [];
           const promises = Object.keys(zip.files).map(async (filename) => {
@@ -576,6 +592,39 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  // Derived state for File Manager
+  const visibleItems = React.useMemo(() => {
+    const items: { type: 'file' | 'folder', name: string, path: string, index: number }[] = [];
+    const folders = new Set<string>();
+
+    const dirPrefix = currentDirectory === "" ? "" : currentDirectory + "/";
+    
+    files.forEach((f, idx) => {
+      if (f.path.startsWith(dirPrefix)) {
+        const remaining = f.path.substring(dirPrefix.length);
+        const parts = remaining.split('/');
+        if (parts.length === 1) {
+          items.push({ type: 'file', name: parts[0], path: f.path, index: idx });
+        } else {
+          folders.add(parts[0]);
+        }
+      }
+    });
+
+    const allItems: any[] = [];
+    folders.forEach(folder => {
+      allItems.push({ type: 'folder', name: folder, path: dirPrefix + folder, index: -1 });
+    });
+    items.forEach(item => {
+      allItems.push(item);
+    });
+
+    return allItems.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [files, currentDirectory]);
 
   if (!token) {
     return (
@@ -795,30 +844,51 @@ export default function App() {
               {/* File List */}
               <div className="border-r-0 md:border-r-4 border-black overflow-y-auto max-h-[500px] bg-white relative">
                 {!fetchingFiles && files.length > 0 && (
-                  <div className="p-3 border-b-4 border-black flex items-center justify-between bg-white sticky top-0 z-10">
-                    <label className="flex items-center gap-2 cursor-pointer border-2 border-black px-3 py-1.5 font-bold text-xs uppercase hover:bg-gray-100 transition-colors">
-                      <input 
-                        type="checkbox" 
-                        className="w-4 h-4 accent-black cursor-pointer"
-                        checked={selectedFileIndexes.length === files.length && files.length > 0}
-                        onChange={(e) => {
-                          if (e.target.checked) {
-                            setSelectedFileIndexes(files.map((_, i) => i));
-                          } else {
-                            setSelectedFileIndexes([]);
-                          }
-                        }}
-                      />
-                      PILIH SEMUA
-                    </label>
-                    <button 
-                      disabled={selectedFileIndexes.length === 0}
-                      onClick={handleDeleteSelected}
-                      className="flex items-center gap-2 border-2 border-red-500 bg-red-200 text-red-600 px-3 py-1.5 font-bold text-xs uppercase disabled:opacity-50 disabled:cursor-not-allowed hover:bg-red-300 transition-colors"
-                    >
-                      <Trash2 size={16} />
-                      HAPUS TERPILIH
-                    </button>
+                  <div className="p-3 border-b-4 border-black flex flex-col gap-3 bg-white sticky top-0 z-10">
+                    <div className="flex items-center gap-2">
+                       {currentDirectory && (
+                          <button 
+                            onClick={() => {
+                              const parts = currentDirectory.split('/');
+                              parts.pop();
+                              setCurrentDirectory(parts.join('/'));
+                            }} 
+                            className="p-1 border-2 border-black hover:bg-gray-100 transition-colors"
+                            title="Back"
+                          >
+                            <CornerUpLeft size={16} />
+                          </button>
+                       )}
+                       <div className="font-mono text-xs font-bold px-2 truncate flex-1 flex items-center gap-2 bg-gray-100 p-1.5 border-2 border-gray-200 shrink-0">
+                         <Folder size={14} className="text-blue-500 shrink-0" />
+                         <span className="truncate">/{currentDirectory}</span>
+                       </div>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 cursor-pointer border-2 border-black px-3 py-1.5 font-bold text-xs uppercase hover:bg-gray-100 transition-colors">
+                        <input 
+                          type="checkbox" 
+                          className="w-4 h-4 accent-black cursor-pointer"
+                          checked={selectedFileIndexes.length === files.length && files.length > 0}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedFileIndexes(files.map((_, i) => i));
+                            } else {
+                              setSelectedFileIndexes([]);
+                            }
+                          }}
+                        />
+                        PILIH SEMUA
+                      </label>
+                      <button 
+                        disabled={selectedFileIndexes.length === 0}
+                        onClick={handleDeleteSelected}
+                        className="flex items-center gap-2 border-2 border-red-500 bg-red-200 text-red-600 px-3 py-1.5 font-bold text-xs uppercase disabled:opacity-50 disabled:cursor-not-allowed hover:bg-red-300 transition-colors"
+                      >
+                        <Trash2 size={16} />
+                        HAPUS ({selectedFileIndexes.length})
+                      </button>
+                    </div>
                   </div>
                 )}
                 {fetchingFiles ? (
@@ -833,18 +903,42 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="divide-y-4 divide-black">
-                    {files.map((file, idx) => {
-                      const isSelected = selectedFileIndexes.includes(idx);
+                    {visibleItems.map((item, idx) => {
+                      if (item.type === 'folder') {
+                        return (
+                          <div 
+                            key={`folder-${idx}`}
+                            className="p-4 flex items-center gap-3 cursor-pointer group transition-colors hover:bg-gray-100"
+                            onClick={() => setCurrentDirectory(item.path)}
+                          >
+                            <div className="w-5 h-5 shrink-0" />
+                            <Folder size={20} className="text-blue-500 shrink-0" />
+                            <span className="flex-1 font-bold text-sm truncate">{item.name}</span>
+                            <div className="flex items-center gap-2 shrink-0">
+                               <button 
+                                 onClick={(e) => { e.stopPropagation(); handleDeleteFolder(item.path); }}
+                                 className="p-2 border-2 border-transparent hover:border-red-500 hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all rounded-lg"
+                                 title="Hapus Folder & Isinya"
+                               >
+                                  <Trash2 size={18} />
+                               </button>
+                               <ChevronRight size={16} className="text-gray-300" />
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      const isSelected = selectedFileIndexes.includes(item.index);
                       return (
                       <div 
-                        key={idx}
+                        key={`file-${idx}`}
                         className={cn(
                           "p-4 flex items-center gap-3 cursor-pointer group transition-colors",
-                          editingFile === idx ? "bg-yellow-200" : isSelected ? "bg-blue-50" : "hover:bg-gray-100"
+                          editingFile === item.index ? "bg-yellow-200" : isSelected ? "bg-blue-50" : "hover:bg-gray-100"
                         )}
                         onClick={() => {
-                          setEditingFile(idx);
-                          fetchFileContent(idx);
+                          setEditingFile(item.index);
+                          fetchFileContent(item.index);
                         }}
                       >
                         <input 
@@ -854,22 +948,22 @@ export default function App() {
                           onChange={(e) => {
                             e.stopPropagation();
                             if (e.target.checked) {
-                              setSelectedFileIndexes(prev => [...prev, idx]);
+                              setSelectedFileIndexes(prev => [...prev, item.index]);
                             } else {
-                              setSelectedFileIndexes(prev => prev.filter(i => i !== idx));
+                              setSelectedFileIndexes(prev => prev.filter(i => i !== item.index));
                             }
                           }}
                         />
-                        <FileText size={20} className={editingFile === idx ? "text-black shrink-0" : "text-gray-400 shrink-0"} />
-                        <span className="flex-1 font-bold text-sm truncate">{file.path}</span>
+                        <FileText size={20} className={editingFile === item.index ? "text-black shrink-0" : "text-gray-400 shrink-0"} />
+                        <span className="flex-1 font-bold text-sm truncate">{item.name}</span>
                         <div className="flex items-center gap-2 shrink-0">
                           <button 
                             onClick={(e) => { 
                               e.stopPropagation(); 
-                              handleDeleteFileFromGitHub(idx); 
+                              handleDeleteFileFromGitHub(item.index); 
                             }}
                             className="p-2 border-2 border-transparent hover:border-red-500 hover:bg-red-50 text-gray-400 hover:text-red-600 transition-all rounded-lg"
-                            title={(file as any).sha ? "Hapus dari GitHub Permanen" : "Hapus dari daftar"}
+                            title={(files[item.index] as any).sha ? "Hapus dari GitHub Permanen" : "Hapus dari daftar"}
                           >
                             <Trash2 size={18} />
                           </button>
