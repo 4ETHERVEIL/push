@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Octokit } from "octokit";
 import JSZip from "jszip";
-import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder, X } from "lucide-react";
+import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder, X, Zap } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
@@ -15,6 +15,18 @@ interface Repository {
   id: number;
   full_name: string;
   default_branch: string;
+}
+
+async function computeGitBlobSha(content: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const contentBytes = encoder.encode(content);
+  const headerBytes = encoder.encode(`blob ${contentBytes.length}\0`);
+  const combined = new Uint8Array(headerBytes.length + contentBytes.length);
+  combined.set(headerBytes, 0);
+  combined.set(contentBytes, headerBytes.length);
+  const hashBuffer = await crypto.subtle.digest("SHA-1", combined);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 export default function App() {
@@ -39,6 +51,7 @@ export default function App() {
     total: number;
     completed: boolean;
   } | null>(null);
+  const [boosterMode, setBoosterMode] = useState(true);
   const [pushProgress, setPushProgress] = useState<{
     isPushing: boolean;
     percent: number;
@@ -46,6 +59,8 @@ export default function App() {
     processed: number;
     total: number;
     completed: boolean;
+    skipped?: number;
+    modeLabel?: string;
   } | null>(null);
 
   // New Repo State
@@ -649,18 +664,20 @@ export default function App() {
   const handlePush = async () => {
     if (!selectedRepo || files.length === 0 || !token) return;
     setLoading(true);
-    setStatus({ type: "info", message: "Preparing push..." });
+    setStatus(null);
+    const startTime = performance.now();
 
     const nonEmptyFiles = files.filter(f => f.content !== "");
-    const totalBlobs = nonEmptyFiles.length;
+    const totalCandidates = nonEmptyFiles.length;
 
     setPushProgress({
       isPushing: true,
       percent: 5,
-      stage: "Mengambil referensi branch...",
+      stage: boosterMode ? "Booster: Mengambil referensi & tree..." : "Mengambil referensi branch...",
       processed: 0,
-      total: totalBlobs,
+      total: totalCandidates,
       completed: false,
+      modeLabel: boosterMode ? "BOOSTER" : "STANDAR",
     });
 
     try {
@@ -671,64 +688,240 @@ export default function App() {
       const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
       const latestCommitSha = refData.object.sha;
 
-      setPushProgress({
-        isPushing: true,
-        percent: 10,
-        stage: totalBlobs > 0 ? "Mengunggah file ke GitHub..." : "Mempersiapkan tree...",
-        processed: 0,
-        total: totalBlobs,
-        completed: false,
-      });
+      let filesToUpload = nonEmptyFiles;
+      let skippedCount = 0;
 
-      // 2. Create Blobs for files that have content (new or modified)
-      const blobs: { path: string; sha: string; mode: "100644"; type: "blob" }[] = new Array(totalBlobs);
-      let completedBlobs = 0;
-      let nextIndex = 0;
-      const concurrency = Math.min(5, Math.max(1, totalBlobs));
-
-      const worker = async () => {
-        while (nextIndex < totalBlobs) {
-          const currentIndex = nextIndex++;
-          const f = nonEmptyFiles[currentIndex];
-          const { data: blob } = await octokit.rest.git.createBlob({
-            owner,
-            repo,
-            content: f.content,
-            encoding: "utf-8",
-          });
-          blobs[currentIndex] = { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
-          completedBlobs++;
-          const blobPercent = totalBlobs > 0 ? 10 + Math.round((completedBlobs / totalBlobs) * 70) : 80;
+      // Booster Step: Compare local Git Blob SHA-1 against remote tree SHAs to skip identical files
+      if (boosterMode && totalCandidates > 0 && typeof crypto !== "undefined" && crypto.subtle) {
+        try {
           setPushProgress({
             isPushing: true,
-            percent: blobPercent,
-            stage: f.path,
-            processed: completedBlobs,
-            total: totalBlobs,
+            percent: 10,
+            stage: "Booster: Memindai perbedaan SHA-1...",
+            processed: 0,
+            total: totalCandidates,
             completed: false,
+            modeLabel: "BOOSTER",
           });
-        }
-      };
 
-      if (totalBlobs > 0) {
-        await Promise.all(Array.from({ length: concurrency }, () => worker()));
+          const { data: remoteTreeData } = await octokit.rest.git.getTree({
+            owner,
+            repo,
+            tree_sha: latestCommitSha,
+            recursive: "true",
+          });
+
+          const remoteShaMap = new Map<string, string>();
+          for (const item of remoteTreeData.tree) {
+            if (item.type === "blob" && item.path && item.sha) {
+              remoteShaMap.set(item.path, item.sha);
+            }
+          }
+
+          const localShas = await Promise.all(
+            nonEmptyFiles.map(async (f) => ({
+              file: f,
+              sha: await computeGitBlobSha(f.content),
+            }))
+          );
+
+          const changed: GitHubFile[] = [];
+          for (const entry of localShas) {
+            const remoteSha = remoteShaMap.get(entry.file.path);
+            if (remoteSha && remoteSha === entry.sha) {
+              skippedCount++;
+            } else {
+              changed.push(entry.file);
+            }
+          }
+          filesToUpload = changed;
+        } catch (diffErr) {
+          console.warn("Booster SHA diff skipped, uploading all files:", diffErr);
+          filesToUpload = nonEmptyFiles;
+          skippedCount = 0;
+        }
       }
 
-      // 3. Create Tree
-      setPushProgress({
-        isPushing: true,
-        percent: 85,
-        stage: "Membuat Git Tree...",
-        processed: totalBlobs,
-        total: totalBlobs,
-        completed: false,
-      });
-      const { data: treeData } = await octokit.rest.git.createTree({
-        owner,
-        repo,
-        base_tree: latestCommitSha,
-        tree: blobs,
-      });
+      const totalBlobs = filesToUpload.length;
+
+      // If Booster detected zero changes needed
+      if (boosterMode && totalCandidates > 0 && totalBlobs === 0) {
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+        setPushProgress({
+          isPushing: false,
+          percent: 100,
+          stage: `Semua ${skippedCount} file sudah sama (${elapsed} dtk)`,
+          processed: 0,
+          total: 0,
+          completed: true,
+          skipped: skippedCount,
+          modeLabel: "BOOSTER",
+        });
+        setStatus({
+          type: "success",
+          message: `⚡ Booster Push: Semua ${skippedCount} file sudah identik dengan GitHub (${elapsed} dtk) — tidak ada perubahan perlu di-push.`,
+        });
+        setFiles([]);
+        setEditingFile(null);
+        return;
+      }
+
+      type TreeEntry = {
+        path: string;
+        mode: "100644";
+        type: "blob";
+        sha?: string;
+        content?: string;
+      };
+
+      const uploadBlobsParallel = async (maxConcurrency: number): Promise<TreeEntry[]> => {
+        const blobs: TreeEntry[] = new Array(totalBlobs);
+        let completedBlobs = 0;
+        let nextIndex = 0;
+        const concurrency = Math.min(maxConcurrency, Math.max(1, totalBlobs));
+
+        const createBlobWithRetry = async (content: string, retries = 2) => {
+          for (let attempt = 0; attempt <= retries; attempt++) {
+            try {
+              return await octokit.rest.git.createBlob({
+                owner,
+                repo,
+                content,
+                encoding: "utf-8",
+              });
+            } catch (err: any) {
+              const isRateOrTransient = err?.status === 403 || err?.status === 429 || err?.status >= 500;
+              if (attempt < retries && isRateOrTransient) {
+                await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+                continue;
+              }
+              throw err;
+            }
+          }
+          throw new Error("Failed to create blob");
+        };
+
+        const worker = async () => {
+          while (nextIndex < totalBlobs) {
+            const currentIndex = nextIndex++;
+            const f = filesToUpload[currentIndex];
+            const { data: blob } = await createBlobWithRetry(f.content);
+            blobs[currentIndex] = { path: f.path, sha: blob.sha, mode: "100644", type: "blob" };
+            completedBlobs++;
+            const blobPercent = totalBlobs > 0 ? 15 + Math.round((completedBlobs / totalBlobs) * 65) : 80;
+            setPushProgress({
+              isPushing: true,
+              percent: blobPercent,
+              stage: f.path,
+              processed: completedBlobs,
+              total: totalBlobs,
+              completed: false,
+              skipped: skippedCount,
+              modeLabel: boosterMode ? "BOOSTER 15x" : "STANDAR",
+            });
+          }
+        };
+
+        if (totalBlobs > 0) {
+          await Promise.all(Array.from({ length: concurrency }, () => worker()));
+        }
+        return blobs;
+      };
+
+      let treeDataSha = "";
+      let usedStrategy = boosterMode ? "15x Paralel" : "Standar";
+
+      // Check if eligible for 1-Shot Inline Tree (<= 150 changed files and <= 2 MB total UTF-8 payload)
+      const encoder = new TextEncoder();
+      const totalPayloadBytes = boosterMode
+        ? filesToUpload.reduce((acc, f) => acc + encoder.encode(f.content).length, 0)
+        : Infinity;
+      const canUseInlineTree = boosterMode && totalBlobs > 0 && totalBlobs <= 150 && totalPayloadBytes <= 2 * 1024 * 1024;
+
+      if (canUseInlineTree) {
+        try {
+          setPushProgress({
+            isPushing: true,
+            percent: 45,
+            stage: `Booster 1-Shot: Mengirim ${totalBlobs} file sekaligus...`,
+            processed: totalBlobs,
+            total: totalBlobs,
+            completed: false,
+            skipped: skippedCount,
+            modeLabel: "1-SHOT TREE",
+          });
+
+          const inlineTree: TreeEntry[] = filesToUpload.map((f) => ({
+            path: f.path,
+            mode: "100644",
+            type: "blob",
+            content: f.content,
+          }));
+
+          const { data: treeData } = await octokit.rest.git.createTree({
+            owner,
+            repo,
+            base_tree: latestCommitSha,
+            tree: inlineTree,
+          });
+          treeDataSha = treeData.sha;
+          usedStrategy = "1-Shot Tree";
+        } catch (inlineErr) {
+          console.warn("1-Shot Inline Tree fallback to 15x Parallel blobs:", inlineErr);
+          const blobs = await uploadBlobsParallel(15);
+          setPushProgress({
+            isPushing: true,
+            percent: 85,
+            stage: "Membuat Git Tree...",
+            processed: totalBlobs,
+            total: totalBlobs,
+            completed: false,
+            skipped: skippedCount,
+            modeLabel: "BOOSTER 15x",
+          });
+          const { data: treeData } = await octokit.rest.git.createTree({
+            owner,
+            repo,
+            base_tree: latestCommitSha,
+            tree: blobs,
+          });
+          treeDataSha = treeData.sha;
+        }
+      } else {
+        setPushProgress({
+          isPushing: true,
+          percent: 15,
+          stage: totalBlobs > 0
+            ? (boosterMode ? `Booster 15x: Mengunggah ${totalBlobs} file...` : "Mengunggah file ke GitHub...")
+            : "Mempersiapkan tree...",
+          processed: 0,
+          total: totalBlobs,
+          completed: false,
+          skipped: skippedCount,
+          modeLabel: boosterMode ? "BOOSTER 15x" : "STANDAR",
+        });
+
+        const blobs = await uploadBlobsParallel(boosterMode ? 15 : 5);
+
+        // 3. Create Tree
+        setPushProgress({
+          isPushing: true,
+          percent: 85,
+          stage: "Membuat Git Tree...",
+          processed: totalBlobs,
+          total: totalBlobs,
+          completed: false,
+          skipped: skippedCount,
+          modeLabel: boosterMode ? "BOOSTER 15x" : "STANDAR",
+        });
+        const { data: treeData } = await octokit.rest.git.createTree({
+          owner,
+          repo,
+          base_tree: latestCommitSha,
+          tree: blobs,
+        });
+        treeDataSha = treeData.sha;
+      }
 
       // 4. Create Commit
       setPushProgress({
@@ -738,12 +931,14 @@ export default function App() {
         processed: totalBlobs,
         total: totalBlobs,
         completed: false,
+        skipped: skippedCount,
+        modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
       const { data: commitData } = await octokit.rest.git.createCommit({
         owner,
         repo,
         message: commitMessage,
-        tree: treeData.sha,
+        tree: treeDataSha,
         parents: [latestCommitSha],
       });
 
@@ -755,6 +950,8 @@ export default function App() {
         processed: totalBlobs,
         total: totalBlobs,
         completed: false,
+        skipped: skippedCount,
+        modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
       await octokit.rest.git.updateRef({
         owner,
@@ -763,15 +960,23 @@ export default function App() {
         sha: commitData.sha,
       });
 
+      const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
       setPushProgress({
         isPushing: false,
         percent: 100,
-        stage: `Push ke ${selectedRepo.full_name} selesai!`,
+        stage: `Selesai dalam ${elapsed} dtk (${usedStrategy})`,
         processed: totalBlobs,
         total: totalBlobs,
         completed: true,
+        skipped: skippedCount,
+        modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
-      setStatus({ type: "success", message: `Successfully pushed ${files.length} files to ${selectedRepo.full_name}!` });
+      setStatus({
+        type: "success",
+        message: boosterMode
+          ? `⚡ Booster Push berhasil dalam ${elapsed} dtk! ${totalBlobs} file dikirim${skippedCount > 0 ? `, ${skippedCount} file sama dilewati` : ""} (${usedStrategy}).`
+          : `Successfully pushed ${files.length} files to ${selectedRepo.full_name}!`,
+      });
       setFiles([]);
       setEditingFile(null);
     } catch (err: any) {
@@ -814,6 +1019,17 @@ export default function App() {
       if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
+  }, [files, currentDirectory]);
+
+  const currentDirFileIndices = React.useMemo(() => {
+    const dirPrefix = currentDirectory === "" ? "" : currentDirectory + "/";
+    const indices: number[] = [];
+    files.forEach((f, idx) => {
+      if (f.path.startsWith(dirPrefix)) {
+        indices.push(idx);
+      }
+    });
+    return indices;
   }, [files, currentDirectory]);
 
   if (!token) {
@@ -1082,14 +1298,52 @@ export default function App() {
             )}
           </AnimatePresence>
 
+          <button
+            type="button"
+            onClick={() => setBoosterMode(!boosterMode)}
+            className={cn(
+              "w-full p-3 border-4 border-black flex items-center justify-between gap-3 text-left transition-colors shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]",
+              boosterMode ? "bg-green-300 hover:bg-green-400" : "bg-white hover:bg-gray-100"
+            )}
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={cn(
+                "p-2 border-2 border-black shrink-0",
+                boosterMode ? "bg-yellow-300" : "bg-gray-200"
+              )}>
+                <Zap size={18} className="text-black" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-black text-xs uppercase flex items-center gap-2">
+                  <span>Booster Push</span>
+                  <span className={cn(
+                    "px-1.5 py-0.5 text-[10px] border-2 border-black",
+                    boosterMode ? "bg-black text-yellow-300" : "bg-gray-200 text-gray-700"
+                  )}>
+                    {boosterMode ? "ON" : "OFF"}
+                  </span>
+                </div>
+                <p className="text-[10px] font-bold text-gray-800 truncate">
+                  Skip file identik (SHA-1) + 1-Shot Tree / 15x Paralel
+                </p>
+              </div>
+            </div>
+            <div className={cn(
+              "w-11 h-6 border-2 border-black p-0.5 flex items-center shrink-0 transition-colors",
+              boosterMode ? "bg-black justify-end" : "bg-gray-300 justify-start"
+            )}>
+              <div className="w-4 h-4 bg-yellow-300 border border-black" />
+            </div>
+          </button>
+
           <Button 
             variant="yellow" 
             className="w-full py-4 text-xl flex items-center justify-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading || !selectedRepo || files.length === 0}
             onClick={handlePush}
           >
-            {loading ? <Loader2 className="animate-spin" /> : <Send />}
-            PUSH TO GITHUB
+            {loading ? <Loader2 className="animate-spin" /> : boosterMode ? <Zap /> : <Send />}
+            {boosterMode ? "BOOSTER PUSH TO GITHUB" : "PUSH TO GITHUB"}
           </Button>
 
           <AnimatePresence>
@@ -1114,6 +1368,11 @@ export default function App() {
                     </span>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    {pushProgress.modeLabel && (
+                      <span className="text-[10px] font-black px-1.5 py-0.5 border-2 border-black bg-black text-yellow-300">
+                        {pushProgress.modeLabel}
+                      </span>
+                    )}
                     <span className="text-xs font-black px-1.5 py-0.5 border-2 border-black bg-yellow-300">
                       {pushProgress.percent}%
                     </span>
@@ -1143,10 +1402,14 @@ export default function App() {
                 </div>
                 <div className="flex justify-between items-center mt-1.5 text-[10px] font-black uppercase text-gray-600">
                   <span className="truncate mr-2">
-                    {pushProgress.completed ? pushProgress.stage : "Mengirim ke GitHub..."}
+                    {pushProgress.completed
+                      ? pushProgress.stage
+                      : pushProgress.skipped
+                        ? `${pushProgress.skipped} file sama dilewati`
+                        : "Mengirim ke GitHub..."}
                   </span>
                   <span className="shrink-0">
-                    {pushProgress.processed} / {pushProgress.total} blob
+                    {pushProgress.processed} / {pushProgress.total} file
                   </span>
                 </div>
               </motion.div>
@@ -1194,12 +1457,12 @@ export default function App() {
                         <input 
                           type="checkbox" 
                           className="w-4 h-4 accent-black cursor-pointer"
-                          checked={selectedFileIndexes.length === files.length && files.length > 0}
+                          checked={currentDirFileIndices.length > 0 && currentDirFileIndices.every(i => selectedFileIndexes.includes(i))}
                           onChange={(e) => {
                             if (e.target.checked) {
-                              setSelectedFileIndexes(files.map((_, i) => i));
+                              setSelectedFileIndexes(prev => Array.from(new Set([...prev, ...currentDirFileIndices])));
                             } else {
-                              setSelectedFileIndexes([]);
+                              setSelectedFileIndexes(prev => prev.filter(i => !currentDirFileIndices.includes(i)));
                             }
                           }}
                         />
@@ -1230,13 +1493,43 @@ export default function App() {
                   <div className="divide-y-4 divide-black">
                     {visibleItems.map((item, idx) => {
                       if (item.type === 'folder') {
+                        const folderPrefix = item.path + '/';
+                        const folderFileIndices: number[] = [];
+                        files.forEach((f, i) => {
+                          if (f.path.startsWith(folderPrefix)) {
+                            folderFileIndices.push(i);
+                          }
+                        });
+                        const selectedInFolder = folderFileIndices.filter(i => selectedFileIndexes.includes(i)).length;
+                        const isFolderSelected = folderFileIndices.length > 0 && selectedInFolder === folderFileIndices.length;
+                        const isFolderPartial = selectedInFolder > 0 && selectedInFolder < folderFileIndices.length;
+
                         return (
                           <div 
                             key={`folder-${idx}`}
-                            className="p-4 flex items-center gap-3 cursor-pointer group transition-colors hover:bg-gray-100"
+                            className={cn(
+                              "p-4 flex items-center gap-3 cursor-pointer group transition-colors",
+                              isFolderSelected ? "bg-blue-50" : "hover:bg-gray-100"
+                            )}
                             onClick={() => setCurrentDirectory(item.path)}
                           >
-                            <div className="w-5 h-5 shrink-0" />
+                            <input
+                              type="checkbox"
+                              className="w-5 h-5 accent-black cursor-pointer shrink-0"
+                              checked={isFolderSelected}
+                              ref={(el) => {
+                                if (el) el.indeterminate = isFolderPartial;
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                if (e.target.checked) {
+                                  setSelectedFileIndexes(prev => Array.from(new Set([...prev, ...folderFileIndices])));
+                                } else {
+                                  setSelectedFileIndexes(prev => prev.filter(i => !folderFileIndices.includes(i)));
+                                }
+                              }}
+                            />
                             <Folder size={20} className="text-blue-500 shrink-0" />
                             <span className="flex-1 font-bold text-sm truncate">{item.name}</span>
                             <div className="flex items-center gap-2 shrink-0">
@@ -1270,6 +1563,7 @@ export default function App() {
                           type="checkbox"
                           className="w-5 h-5 accent-black cursor-pointer shrink-0"
                           checked={isSelected}
+                          onClick={(e) => e.stopPropagation()}
                           onChange={(e) => {
                             e.stopPropagation();
                             if (e.target.checked) {
