@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Octokit } from "octokit";
 import JSZip from "jszip";
-import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder } from "lucide-react";
+import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
@@ -31,6 +31,14 @@ export default function App() {
   const [commitMessage, setCommitMessage] = useState("Feat: push from GitHub Fast Push");
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<{ type: "success" | "error" | "info"; message: string } | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{
+    isUploading: boolean;
+    percent: number;
+    currentFile: string;
+    processed: number;
+    total: number;
+    completed: boolean;
+  } | null>(null);
 
   // New Repo State
   const [showCreateRepo, setShowCreateRepo] = useState(false);
@@ -457,11 +465,22 @@ export default function App() {
     handleBatchDelete(indices);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const uploadedFiles = e.target.files;
-    if (!uploadedFiles) return;
+  const processFiles = async (uploadedFiles: FileList) => {
+    if (!uploadedFiles || uploadedFiles.length === 0) return;
+
+    const totalInputFiles = uploadedFiles.length;
+    setUploadProgress({
+      isUploading: true,
+      percent: 0,
+      currentFile: "Mempersiapkan file...",
+      processed: 0,
+      total: totalInputFiles,
+      completed: false,
+    });
 
     let newFilesList: GitHubFile[] = [];
+    let totalWorkItems = totalInputFiles;
+    let completedWorkItems = 0;
 
     for (let i = 0; i < uploadedFiles.length; i++) {
       const file = uploadedFiles[i];
@@ -470,26 +489,82 @@ export default function App() {
       if (file.name.endsWith(".zip") && !file.webkitRelativePath) {
         try {
           setCurrentDirectory(""); // Reset for safety
+          setUploadProgress({
+            isUploading: true,
+            percent: Math.min(95, Math.round((completedWorkItems / totalWorkItems) * 100)),
+            currentFile: `Mengekstrak ${file.name}...`,
+            processed: completedWorkItems,
+            total: totalWorkItems,
+            completed: false,
+          });
+
           const zip = await JSZip.loadAsync(file);
-          const promises = Object.keys(zip.files).map(async (filename) => {
-            const zipFile = zip.files[filename];
-            if (!zipFile.dir) {
+          const zipEntries = Object.keys(zip.files).filter((filename) => !zip.files[filename].dir);
+          totalWorkItems = totalWorkItems - 1 + Math.max(1, zipEntries.length);
+
+          if (zipEntries.length === 0) {
+            completedWorkItems++;
+          } else {
+            for (const filename of zipEntries) {
+              const zipFile = zip.files[filename];
               const content = await zipFile.async("string");
               newFilesList.push({ path: filename, content });
+              completedWorkItems++;
+              setUploadProgress({
+                isUploading: true,
+                percent: Math.round((completedWorkItems / totalWorkItems) * 100),
+                currentFile: filename,
+                processed: completedWorkItems,
+                total: totalWorkItems,
+                completed: false,
+              });
             }
-          });
-          await Promise.all(promises);
+          }
         } catch (err) {
           console.error("ZIP load error:", err);
           setStatus({ type: "error", message: "Gagal memproses file ZIP." });
+          completedWorkItems++;
         }
       } else {
+        setUploadProgress({
+          isUploading: true,
+          percent: Math.round((completedWorkItems / totalWorkItems) * 100),
+          currentFile: filePath,
+          processed: completedWorkItems,
+          total: totalWorkItems,
+          completed: false,
+        });
+
         const content = await new Promise<string>((resolve) => {
           const reader = new FileReader();
-          reader.onload = (event) => resolve(event.target?.result as string);
+          reader.onprogress = (event) => {
+            if (event.lengthComputable && event.total > 0) {
+              const fileRatio = event.loaded / event.total;
+              const overallPercent = Math.round(((completedWorkItems + fileRatio) / totalWorkItems) * 100);
+              setUploadProgress((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      percent: Math.min(99, overallPercent),
+                      currentFile: filePath,
+                    }
+                  : null
+              );
+            }
+          };
+          reader.onload = (event) => resolve((event.target?.result as string) ?? "");
           reader.readAsText(file);
         });
         newFilesList.push({ path: filePath, content });
+        completedWorkItems++;
+        setUploadProgress({
+          isUploading: true,
+          percent: Math.round((completedWorkItems / totalWorkItems) * 100),
+          currentFile: filePath,
+          processed: completedWorkItems,
+          total: totalWorkItems,
+          completed: false,
+        });
       }
     }
 
@@ -519,6 +594,24 @@ export default function App() {
       return merged;
     });
 
+    if (newFilesList.length > 0) {
+      setUploadProgress({
+        isUploading: false,
+        percent: 100,
+        currentFile: "Selesai diupload!",
+        processed: newFilesList.length,
+        total: newFilesList.length,
+        completed: true,
+      });
+    } else {
+      setUploadProgress(null);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const uploadedFiles = e.target.files;
+    if (!uploadedFiles) return;
+    await processFiles(uploadedFiles);
     e.target.value = ""; // Reset input
   };
 
@@ -802,7 +895,20 @@ export default function App() {
             <h3 className="font-black text-sm uppercase mb-3 flex items-center gap-2">
               <Upload size={18} /> Upload Data
             </h3>
-            <label className="group block cursor-pointer">
+            <label
+              className="group block cursor-pointer"
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  await processFiles(e.dataTransfer.files);
+                }
+              }}
+            >
               <div className="border-4 border-dashed border-black p-8 text-center bg-white group-hover:bg-yellow-50 transition-colors">
                 <Upload className="mx-auto mb-2 text-black group-hover:scale-110 transition-transform" />
                 <p className="text-sm font-black">Klik atau Drag File/ZIP</p>
@@ -810,6 +916,67 @@ export default function App() {
               </div>
               <input type="file" multiple className="hidden" onChange={handleFileUpload} />
             </label>
+
+            <AnimatePresence>
+              {uploadProgress && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  className="mt-4 p-3 bg-white border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
+                >
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {uploadProgress.completed ? (
+                        <CheckCircle2 size={16} className="text-green-600 shrink-0" />
+                      ) : (
+                        <Loader2 size={16} className="animate-spin text-black shrink-0" />
+                      )}
+                      <span className="text-xs font-black uppercase truncate">
+                        {uploadProgress.completed
+                          ? `Upload Selesai (${uploadProgress.total} file)`
+                          : `Mengupload: ${uploadProgress.currentFile}`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs font-black px-1.5 py-0.5 border-2 border-black bg-yellow-300">
+                        {uploadProgress.percent}%
+                      </span>
+                      {uploadProgress.completed && (
+                        <button
+                          type="button"
+                          onClick={() => setUploadProgress(null)}
+                          className="p-0.5 hover:bg-gray-200 border-2 border-black transition-colors"
+                          title="Tutup"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="w-full h-4 bg-gray-200 border-2 border-black overflow-hidden">
+                    <motion.div
+                      className={cn(
+                        "h-full transition-all duration-200",
+                        uploadProgress.percent > 0 && uploadProgress.percent < 100 && "border-r-2 border-black",
+                        uploadProgress.completed ? "bg-green-400" : "bg-blue-400"
+                      )}
+                      initial={{ width: 0 }}
+                      animate={{ width: `${uploadProgress.percent}%` }}
+                      transition={{ duration: 0.15 }}
+                    />
+                  </div>
+                  <div className="flex justify-between items-center mt-1.5 text-[10px] font-black uppercase text-gray-600">
+                    <span>
+                      {uploadProgress.completed ? "File berhasil dimuat" : "Memproses file..."}
+                    </span>
+                    <span>
+                      {uploadProgress.processed} / {uploadProgress.total} file
+                    </span>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </Card>
 
           <AnimatePresence>
