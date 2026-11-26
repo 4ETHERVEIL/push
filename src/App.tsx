@@ -62,6 +62,14 @@ export default function App() {
     skipped?: number;
     modeLabel?: string;
   } | null>(null);
+  const [deleteProgress, setDeleteProgress] = useState<{
+    isDeleting: boolean;
+    percent: number;
+    currentFile: string;
+    processed: number;
+    total: number;
+    completed: boolean;
+  } | null>(null);
 
   // New Repo State
   const [showCreateRepo, setShowCreateRepo] = useState(false);
@@ -387,7 +395,15 @@ export default function App() {
       confirmVariant: "danger",
       onConfirm: async () => {
         setLoading(true);
-        setStatus({ type: "info", message: `Deleting ${file.path}...` });
+        setStatus(null);
+        setDeleteProgress({
+          isDeleting: true,
+          percent: 25,
+          currentFile: file.path,
+          processed: 0,
+          total: 1,
+          completed: false,
+        });
 
         try {
           const octokit = new Octokit({ auth: token });
@@ -402,13 +418,32 @@ export default function App() {
             branch: branch,
           });
 
-          setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
+          setDeleteProgress({
+            isDeleting: true,
+            percent: 85,
+            currentFile: "Memperbarui daftar file...",
+            processed: 1,
+            total: 1,
+            completed: false,
+          });
+
           setSelectedFileIndexes(prev => prev.filter(i => i !== index));
           
           // Force refresh from GitHub after deletion to sync state
           await fetchRepoFiles(selectedRepo.full_name, branch);
+
+          setDeleteProgress({
+            isDeleting: false,
+            percent: 100,
+            currentFile: `${file.path} berhasil dihapus!`,
+            processed: 1,
+            total: 1,
+            completed: true,
+          });
+          setStatus({ type: "success", message: `File ${file.path} deleted from GitHub.` });
         } catch (err: any) {
           console.error(err);
+          setDeleteProgress(null);
           setStatus({ type: "error", message: `Failed to delete file: ${err.message}` });
         } finally {
           setLoading(false);
@@ -429,6 +464,14 @@ export default function App() {
       // All local files, simply remove them
       setFiles(prev => prev.filter((_, i) => !indices.includes(i)));
       setSelectedFileIndexes(prev => prev.filter(i => !indices.includes(i)));
+      setDeleteProgress({
+        isDeleting: false,
+        percent: 100,
+        currentFile: `${localFiles.length} file lokal berhasil dihapus!`,
+        processed: localFiles.length,
+        total: localFiles.length,
+        completed: true,
+      });
       setStatus({ type: "success", message: `Berhasil menghapus ${localFiles.length} file lokal.` });
       return;
     }
@@ -441,15 +484,33 @@ export default function App() {
       confirmVariant: "danger",
       onConfirm: async () => {
         setLoading(true);
-        setStatus({ type: "info", message: `Menghapus ${githubFiles.length} file dari GitHub...` });
+        setStatus(null);
+        const totalToDelete = githubFiles.length;
+        setDeleteProgress({
+          isDeleting: true,
+          percent: 5,
+          currentFile: "Mempersiapkan penghapusan...",
+          processed: 0,
+          total: totalToDelete,
+          completed: false,
+        });
 
         try {
           const octokit = new Octokit({ auth: token });
           const [owner, repo] = selectedRepo.full_name.split("/");
           
           // Delete sequentially to avoid rate limits or conflicts
-          for (const gf of githubFiles) {
-             await octokit.rest.repos.deleteFile({
+          for (let i = 0; i < githubFiles.length; i++) {
+            const gf = githubFiles[i];
+            setDeleteProgress({
+              isDeleting: true,
+              percent: Math.max(5, Math.round((i / totalToDelete) * 90)),
+              currentFile: gf.file.path,
+              processed: i,
+              total: totalToDelete,
+              completed: false,
+            });
+            await octokit.rest.repos.deleteFile({
               owner,
               repo,
               path: gf.file.path,
@@ -457,15 +518,42 @@ export default function App() {
               sha: (gf.file as any).sha,
               branch: branch,
             });
+            setDeleteProgress({
+              isDeleting: true,
+              percent: Math.round(((i + 1) / totalToDelete) * 90),
+              currentFile: gf.file.path,
+              processed: i + 1,
+              total: totalToDelete,
+              completed: false,
+            });
           }
 
-          setStatus({ type: "success", message: `Berhasil menghapus ${indices.length} file.` });
+          setDeleteProgress({
+            isDeleting: true,
+            percent: 95,
+            currentFile: "Memperbarui daftar file...",
+            processed: totalToDelete,
+            total: totalToDelete,
+            completed: false,
+          });
+
           setSelectedFileIndexes(prev => prev.filter(i => !indices.includes(i)));
           
           // Force refresh from GitHub after deletion to sync state
           await fetchRepoFiles(selectedRepo.full_name, branch);
+
+          setDeleteProgress({
+            isDeleting: false,
+            percent: 100,
+            currentFile: `${indices.length} file berhasil dihapus!`,
+            processed: totalToDelete,
+            total: totalToDelete,
+            completed: true,
+          });
+          setStatus({ type: "success", message: `Berhasil menghapus ${indices.length} file.` });
         } catch (err: any) {
           console.error(err);
+          setDeleteProgress(null);
           setStatus({ type: "error", message: `Failed to delete files: ${err.message}` });
         } finally {
           setLoading(false);
@@ -1427,6 +1515,69 @@ export default function App() {
                 <span className="text-xs bg-yellow-400 text-black px-2 py-1 rounded font-bold">{files.length} FILES</span>
               </div>
             </div>
+
+            <AnimatePresence>
+              {deleteProgress && (
+                <motion.div
+                  initial={{ opacity: 0, y: -6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -6 }}
+                  className="p-3 bg-white border-b-4 border-black"
+                >
+                  <div className="p-3 bg-white border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]">
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        {deleteProgress.completed ? (
+                          <CheckCircle2 size={16} className="text-green-600 shrink-0" />
+                        ) : (
+                          <Loader2 size={16} className="animate-spin text-black shrink-0" />
+                        )}
+                        <span className="text-xs font-black uppercase truncate">
+                          {deleteProgress.completed
+                            ? `Hapus Selesai (${deleteProgress.total} file)`
+                            : `Menghapus: ${deleteProgress.currentFile}`}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-xs font-black px-1.5 py-0.5 border-2 border-black bg-yellow-300">
+                          {deleteProgress.percent}%
+                        </span>
+                        {deleteProgress.completed && (
+                          <button
+                            type="button"
+                            onClick={() => setDeleteProgress(null)}
+                            className="p-0.5 hover:bg-gray-200 border-2 border-black transition-colors"
+                            title="Tutup"
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <div className="w-full h-4 bg-gray-200 border-2 border-black overflow-hidden">
+                      <motion.div
+                        className={cn(
+                          "h-full transition-all duration-200",
+                          deleteProgress.percent > 0 && deleteProgress.percent < 100 && "border-r-2 border-black",
+                          deleteProgress.completed ? "bg-green-400" : "bg-red-400"
+                        )}
+                        initial={{ width: 0 }}
+                        animate={{ width: `${deleteProgress.percent}%` }}
+                        transition={{ duration: 0.15 }}
+                      />
+                    </div>
+                    <div className="flex justify-between items-center mt-1.5 text-[10px] font-black uppercase text-gray-600">
+                      <span className="truncate mr-2">
+                        {deleteProgress.completed ? deleteProgress.currentFile : "Menghapus dari GitHub..."}
+                      </span>
+                      <span className="shrink-0">
+                        {deleteProgress.processed} / {deleteProgress.total} file
+                      </span>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             <div className="flex-1 grid grid-cols-1 md:grid-cols-2">
               {/* File List */}
