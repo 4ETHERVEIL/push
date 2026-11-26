@@ -31,6 +31,7 @@ async function computeGitBlobSha(content: string): Promise<string> {
 
 export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem("gh_token"));
+  const [tokenScopes, setTokenScopes] = useState<string[]>([]);
   const [user, setUser] = useState<any>(null);
   const [repos, setRepos] = useState<Repository[]>([]);
   const [selectedRepo, setSelectedRepo] = useState<Repository | null>(null);
@@ -269,7 +270,16 @@ export default function App() {
     if (token) {
       const octokit = new Octokit({ auth: token });
       octokit.rest.users.getAuthenticated()
-        .then(({ data }) => setUser(data))
+        .then((res) => {
+          setUser(res.data);
+          const scopeHeader = res.headers?.["x-oauth-scopes"] || "";
+          setTokenScopes(
+            String(scopeHeader)
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean)
+          );
+        })
         .catch(err => {
           console.error(err);
           handleLogout();
@@ -303,6 +313,7 @@ export default function App() {
   const handleLogout = () => {
     localStorage.removeItem("gh_token");
     setToken(null);
+    setTokenScopes([]);
     setUser(null);
     setRepos([]);
   };
@@ -751,11 +762,44 @@ export default function App() {
 
   const handlePush = async () => {
     if (!selectedRepo || files.length === 0 || !token) return;
+
+    const normalizedFiles = files
+      .filter(f => f.content !== "")
+      .map(f => ({
+        ...f,
+        path: f.path.replace(/^\/+/, "").replace(/\/+/g, "/"),
+      }))
+      .filter(f => f.path !== "" && !f.path.endsWith("/"));
+
+    const dedupedMap = new Map<string, GitHubFile>();
+    for (const f of normalizedFiles) {
+      dedupedMap.set(f.path, f);
+    }
+    const nonEmptyFiles = Array.from(dedupedMap.values());
+    const hasWorkflowFiles = nonEmptyFiles.some(f => f.path.startsWith(".github/workflows/"));
+
+    if (hasWorkflowFiles && tokenScopes.length > 0 && !tokenScopes.includes("workflow")) {
+      setStatus({
+        type: "error",
+        message: "Izin 'workflow' diperlukan untuk push folder .github/workflows/. Klik Login Ulang agar file bisa di-push tanpa menghapus daftar file Anda.",
+      });
+      setConfirmModal({
+        isOpen: true,
+        title: "IZIN WORKFLOW DIPERLUKAN",
+        message: "Project ini berisi file di .github/workflows/. GitHub mewajibkan izin 'workflow' saat login. Klik LOGIN ULANG untuk memperbarui izin sekarang (daftar file Anda tetap aman).",
+        confirmText: "LOGIN ULANG",
+        confirmVariant: "primary",
+        onConfirm: () => {
+          handleLogin();
+        },
+      });
+      return;
+    }
+
     setLoading(true);
     setStatus(null);
     const startTime = performance.now();
 
-    const nonEmptyFiles = files.filter(f => f.content !== "");
     const totalCandidates = nonEmptyFiles.length;
 
     setPushProgress({
@@ -772,9 +816,37 @@ export default function App() {
       const octokit = new Octokit({ auth: token });
       const [owner, repo] = selectedRepo.full_name.split("/");
 
-      // 1. Get latest commit SHA
-      const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
-      const latestCommitSha = refData.object.sha;
+      // 1. Get latest commit SHA (auto-init if repo is completely empty)
+      let latestCommitSha = "";
+      try {
+        const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+        latestCommitSha = refData.object.sha;
+      } catch (refErr: any) {
+        if ((refErr?.status === 404 || refErr?.status === 409) && nonEmptyFiles.length > 0) {
+          // Initialize empty repository or missing branch with a README if empty
+          const initFile = nonEmptyFiles.find(f => !f.path.startsWith(".github/workflows/")) || nonEmptyFiles[0];
+          const encodedContent = btoa(unescape(encodeURIComponent(initFile.content)));
+          await octokit.rest.repos.createOrUpdateFileContents({
+            owner,
+            repo,
+            path: initFile.path,
+            message: `Initial commit: ${initFile.path}`,
+            content: encodedContent,
+            branch,
+          });
+          const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
+          latestCommitSha = refData.object.sha;
+        } else {
+          throw refErr;
+        }
+      }
+
+      const { data: latestCommitData } = await octokit.rest.git.getCommit({
+        owner,
+        repo,
+        commit_sha: latestCommitSha,
+      });
+      const baseTreeSha = latestCommitData.tree.sha;
 
       let filesToUpload = nonEmptyFiles;
       let skippedCount = 0;
@@ -795,7 +867,7 @@ export default function App() {
           const { data: remoteTreeData } = await octokit.rest.git.getTree({
             owner,
             repo,
-            tree_sha: latestCommitSha,
+            tree_sha: baseTreeSha,
             recursive: "true",
           });
 
@@ -949,12 +1021,15 @@ export default function App() {
           const { data: treeData } = await octokit.rest.git.createTree({
             owner,
             repo,
-            base_tree: latestCommitSha,
+            base_tree: baseTreeSha,
             tree: inlineTree,
           });
           treeDataSha = treeData.sha;
           usedStrategy = "1-Shot Tree";
-        } catch (inlineErr) {
+        } catch (inlineErr: any) {
+          if (inlineErr?.status === 404 && hasWorkflowFiles) {
+            throw inlineErr;
+          }
           console.warn("1-Shot Inline Tree fallback to 15x Parallel blobs:", inlineErr);
           const blobs = await uploadBlobsParallel(15);
           setPushProgress({
@@ -970,7 +1045,7 @@ export default function App() {
           const { data: treeData } = await octokit.rest.git.createTree({
             owner,
             repo,
-            base_tree: latestCommitSha,
+            base_tree: baseTreeSha,
             tree: blobs,
           });
           treeDataSha = treeData.sha;
@@ -1005,7 +1080,7 @@ export default function App() {
         const { data: treeData } = await octokit.rest.git.createTree({
           owner,
           repo,
-          base_tree: latestCommitSha,
+          base_tree: baseTreeSha,
           tree: blobs,
         });
         treeDataSha = treeData.sha;
@@ -1070,7 +1145,24 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       setPushProgress(null);
-      setStatus({ type: "error", message: `Push failed: ${err.message}` });
+      if ((err?.status === 404 || err?.message?.includes("create-a-tree")) && hasWorkflowFiles) {
+        setStatus({
+          type: "error",
+          message: "Push ditolak GitHub (404) karena folder .github/workflows/ butuh izin 'workflow'. Silakan Logout dan Login kembali untuk memperbarui izin.",
+        });
+        setConfirmModal({
+          isOpen: true,
+          title: "IZIN WORKFLOW DIPERLUKAN",
+          message: "GitHub menolak push file .github/workflows/ karena sesi login Anda belum memiliki izin 'workflow'. Klik LOGIN ULANG sekarang untuk memperbarui izin (daftar file Anda tidak akan hilang).",
+          confirmText: "LOGIN ULANG",
+          confirmVariant: "primary",
+          onConfirm: () => {
+            handleLogin();
+          },
+        });
+      } else {
+        setStatus({ type: "error", message: `Push failed: ${err.message}` });
+      }
     } finally {
       setLoading(false);
     }
