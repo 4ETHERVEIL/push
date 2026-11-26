@@ -39,6 +39,14 @@ export default function App() {
     total: number;
     completed: boolean;
   } | null>(null);
+  const [pushProgress, setPushProgress] = useState<{
+    isPushing: boolean;
+    percent: number;
+    stage: string;
+    processed: number;
+    total: number;
+    completed: boolean;
+  } | null>(null);
 
   // New Repo State
   const [showCreateRepo, setShowCreateRepo] = useState(false);
@@ -643,6 +651,18 @@ export default function App() {
     setLoading(true);
     setStatus({ type: "info", message: "Preparing push..." });
 
+    const nonEmptyFiles = files.filter(f => f.content !== "");
+    const totalBlobs = nonEmptyFiles.length;
+
+    setPushProgress({
+      isPushing: true,
+      percent: 5,
+      stage: "Mengambil referensi branch...",
+      processed: 0,
+      total: totalBlobs,
+      completed: false,
+    });
+
     try {
       const octokit = new Octokit({ auth: token });
       const [owner, repo] = selectedRepo.full_name.split("/");
@@ -651,22 +671,58 @@ export default function App() {
       const { data: refData } = await octokit.rest.git.getRef({ owner, repo, ref: `heads/${branch}` });
       const latestCommitSha = refData.object.sha;
 
+      setPushProgress({
+        isPushing: true,
+        percent: 10,
+        stage: totalBlobs > 0 ? "Mengunggah file ke GitHub..." : "Mempersiapkan tree...",
+        processed: 0,
+        total: totalBlobs,
+        completed: false,
+      });
+
       // 2. Create Blobs for files that have content (new or modified)
-      const blobs = await Promise.all(
-        files
-          .filter(f => f.content !== "") 
-          .map(async (f) => {
-            const { data: blob } = await octokit.rest.git.createBlob({
-              owner,
-              repo,
-              content: f.content,
-              encoding: "utf-8",
-            });
-            return { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
-          })
-      );
+      const blobs: { path: string; sha: string; mode: "100644"; type: "blob" }[] = new Array(totalBlobs);
+      let completedBlobs = 0;
+      let nextIndex = 0;
+      const concurrency = Math.min(5, Math.max(1, totalBlobs));
+
+      const worker = async () => {
+        while (nextIndex < totalBlobs) {
+          const currentIndex = nextIndex++;
+          const f = nonEmptyFiles[currentIndex];
+          const { data: blob } = await octokit.rest.git.createBlob({
+            owner,
+            repo,
+            content: f.content,
+            encoding: "utf-8",
+          });
+          blobs[currentIndex] = { path: f.path, sha: blob.sha, mode: "100644" as const, type: "blob" as const };
+          completedBlobs++;
+          const blobPercent = totalBlobs > 0 ? 10 + Math.round((completedBlobs / totalBlobs) * 70) : 80;
+          setPushProgress({
+            isPushing: true,
+            percent: blobPercent,
+            stage: f.path,
+            processed: completedBlobs,
+            total: totalBlobs,
+            completed: false,
+          });
+        }
+      };
+
+      if (totalBlobs > 0) {
+        await Promise.all(Array.from({ length: concurrency }, () => worker()));
+      }
 
       // 3. Create Tree
+      setPushProgress({
+        isPushing: true,
+        percent: 85,
+        stage: "Membuat Git Tree...",
+        processed: totalBlobs,
+        total: totalBlobs,
+        completed: false,
+      });
       const { data: treeData } = await octokit.rest.git.createTree({
         owner,
         repo,
@@ -675,6 +731,14 @@ export default function App() {
       });
 
       // 4. Create Commit
+      setPushProgress({
+        isPushing: true,
+        percent: 92,
+        stage: "Membuat Commit...",
+        processed: totalBlobs,
+        total: totalBlobs,
+        completed: false,
+      });
       const { data: commitData } = await octokit.rest.git.createCommit({
         owner,
         repo,
@@ -684,6 +748,14 @@ export default function App() {
       });
 
       // 5. Update Ref
+      setPushProgress({
+        isPushing: true,
+        percent: 97,
+        stage: `Memperbarui branch ${branch}...`,
+        processed: totalBlobs,
+        total: totalBlobs,
+        completed: false,
+      });
       await octokit.rest.git.updateRef({
         owner,
         repo,
@@ -691,11 +763,20 @@ export default function App() {
         sha: commitData.sha,
       });
 
+      setPushProgress({
+        isPushing: false,
+        percent: 100,
+        stage: `Push ke ${selectedRepo.full_name} selesai!`,
+        processed: totalBlobs,
+        total: totalBlobs,
+        completed: true,
+      });
       setStatus({ type: "success", message: `Successfully pushed ${files.length} files to ${selectedRepo.full_name}!` });
       setFiles([]);
       setEditingFile(null);
     } catch (err: any) {
       console.error(err);
+      setPushProgress(null);
       setStatus({ type: "error", message: `Push failed: ${err.message}` });
     } finally {
       setLoading(false);
@@ -1010,6 +1091,67 @@ export default function App() {
             {loading ? <Loader2 className="animate-spin" /> : <Send />}
             PUSH TO GITHUB
           </Button>
+
+          <AnimatePresence>
+            {pushProgress && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                className="p-3 bg-white border-4 border-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)]"
+              >
+                <div className="flex items-center justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    {pushProgress.completed ? (
+                      <CheckCircle2 size={16} className="text-green-600 shrink-0" />
+                    ) : (
+                      <Loader2 size={16} className="animate-spin text-black shrink-0" />
+                    )}
+                    <span className="text-xs font-black uppercase truncate">
+                      {pushProgress.completed
+                        ? "Push Selesai!"
+                        : `Push: ${pushProgress.stage}`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-xs font-black px-1.5 py-0.5 border-2 border-black bg-yellow-300">
+                      {pushProgress.percent}%
+                    </span>
+                    {pushProgress.completed && (
+                      <button
+                        type="button"
+                        onClick={() => setPushProgress(null)}
+                        className="p-0.5 hover:bg-gray-200 border-2 border-black transition-colors"
+                        title="Tutup"
+                      >
+                        <X size={12} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="w-full h-4 bg-gray-200 border-2 border-black overflow-hidden">
+                  <motion.div
+                    className={cn(
+                      "h-full transition-all duration-200",
+                      pushProgress.percent > 0 && pushProgress.percent < 100 && "border-r-2 border-black",
+                      pushProgress.completed ? "bg-green-400" : "bg-yellow-400"
+                    )}
+                    initial={{ width: 0 }}
+                    animate={{ width: `${pushProgress.percent}%` }}
+                    transition={{ duration: 0.15 }}
+                  />
+                </div>
+                <div className="flex justify-between items-center mt-1.5 text-[10px] font-black uppercase text-gray-600">
+                  <span className="truncate mr-2">
+                    {pushProgress.completed ? pushProgress.stage : "Mengirim ke GitHub..."}
+                  </span>
+                  <span className="shrink-0">
+                    {pushProgress.processed} / {pushProgress.total} blob
+                  </span>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* Right Column - File List & Editor */}
