@@ -29,6 +29,84 @@ async function computeGitBlobSha(content: string): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+function waitForVisibleAndOnline(): Promise<void> {
+  return new Promise((resolve) => {
+    const check = () => {
+      if (document.visibilityState === "visible" && navigator.onLine !== false) {
+        document.removeEventListener("visibilitychange", check);
+        window.removeEventListener("online", check);
+        resolve();
+      }
+    };
+    if (document.visibilityState === "visible" && navigator.onLine !== false) {
+      resolve();
+      return;
+    }
+    document.addEventListener("visibilitychange", check);
+    window.addEventListener("online", check);
+  });
+}
+
+async function runWithResume<T>(
+  fn: () => Promise<T>,
+  onPaused?: () => void,
+  maxRetries = 4
+): Promise<T> {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      if (document.visibilityState === "hidden") {
+        onPaused?.();
+        await waitForVisibleAndOnline();
+      }
+      return await fn();
+    } catch (err: any) {
+      const msg = String(err?.message || "").toLowerCase();
+      const isNetworkOrSuspend =
+        !err?.status ||
+        err?.status >= 500 ||
+        err?.status === 429 ||
+        (err?.status === 403 && (msg.includes("rate limit") || msg.includes("secondary rate"))) ||
+        msg.includes("failed to fetch") ||
+        msg.includes("network") ||
+        msg.includes("load failed") ||
+        msg.includes("aborted");
+
+      if (attempt < maxRetries && isNetworkOrSuspend) {
+        if (document.visibilityState === "hidden" || navigator.onLine === false) {
+          onPaused?.();
+          await waitForVisibleAndOnline();
+        } else {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        }
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error("Network request failed after retries");
+}
+
+async function acquireWakeLock(): Promise<any> {
+  try {
+    if ("wakeLock" in navigator && (navigator as any).wakeLock?.request) {
+      return await (navigator as any).wakeLock.request("screen");
+    }
+  } catch {
+    // Ignore wake lock rejection
+  }
+  return null;
+}
+
+function sendBrowserNotification(title: string, body: string) {
+  try {
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification(title, { body });
+    }
+  } catch {
+    // Ignore notification errors on mobile browsers that restrict new Notification()
+  }
+}
+
 export default function App() {
   const [token, setToken] = useState<string | null>(localStorage.getItem("gh_token"));
   const [tokenScopes, setTokenScopes] = useState<string[]>([]);
@@ -497,6 +575,7 @@ export default function App() {
         setLoading(true);
         setStatus(null);
         const totalToDelete = githubFiles.length;
+        const wakeLock = await acquireWakeLock();
         setDeleteProgress({
           isDeleting: true,
           percent: 5,
@@ -521,14 +600,21 @@ export default function App() {
               total: totalToDelete,
               completed: false,
             });
-            await octokit.rest.repos.deleteFile({
-              owner,
-              repo,
-              path: gf.file.path,
-              message: `Delete: ${gf.file.path} via Fast Push`,
-              sha: (gf.file as any).sha,
-              branch: branch,
-            });
+            await runWithResume(
+              () =>
+                octokit.rest.repos.deleteFile({
+                  owner,
+                  repo,
+                  path: gf.file.path,
+                  message: `Delete: ${gf.file.path} via Fast Push`,
+                  sha: (gf.file as any).sha,
+                  branch: branch,
+                }),
+              () =>
+                setDeleteProgress((prev) =>
+                  prev ? { ...prev, currentFile: "Dijeda saat pindah app — otomatis lanjut saat kembali..." } : null
+                )
+            );
             setDeleteProgress({
               isDeleting: true,
               percent: Math.round(((i + 1) / totalToDelete) * 90),
@@ -562,11 +648,13 @@ export default function App() {
             completed: true,
           });
           setStatus({ type: "success", message: `Berhasil menghapus ${indices.length} file.` });
+          sendBrowserNotification("Hapus File Selesai", `${indices.length} file berhasil dihapus dari GitHub.`);
         } catch (err: any) {
           console.error(err);
           setDeleteProgress(null);
           setStatus({ type: "error", message: `Failed to delete files: ${err.message}` });
         } finally {
+          wakeLock?.release?.().catch?.(() => {});
           setLoading(false);
         }
       }
@@ -604,90 +692,106 @@ export default function App() {
     let totalWorkItems = totalInputFiles;
     let completedWorkItems = 0;
 
+    const regularFiles: { file: File; filePath: string }[] = [];
+    const zipFiles: File[] = [];
+
     for (let i = 0; i < uploadedFiles.length; i++) {
       const file = uploadedFiles[i];
       const filePath = file.webkitRelativePath || file.name;
-
       if (file.name.endsWith(".zip") && !file.webkitRelativePath) {
-        try {
-          setCurrentDirectory(""); // Reset for safety
-          setUploadProgress({
-            isUploading: true,
-            percent: Math.min(95, Math.round((completedWorkItems / totalWorkItems) * 100)),
-            currentFile: `Mengekstrak ${file.name}...`,
-            processed: completedWorkItems,
-            total: totalWorkItems,
-            completed: false,
-          });
-
-          const zip = await JSZip.loadAsync(file);
-          const zipEntries = Object.keys(zip.files).filter((filename) => !zip.files[filename].dir);
-          totalWorkItems = totalWorkItems - 1 + Math.max(1, zipEntries.length);
-
-          if (zipEntries.length === 0) {
-            completedWorkItems++;
-          } else {
-            for (const filename of zipEntries) {
-              const zipFile = zip.files[filename];
-              const content = await zipFile.async("string");
-              newFilesList.push({ path: filename, content });
-              completedWorkItems++;
-              setUploadProgress({
-                isUploading: true,
-                percent: Math.round((completedWorkItems / totalWorkItems) * 100),
-                currentFile: filename,
-                processed: completedWorkItems,
-                total: totalWorkItems,
-                completed: false,
-              });
-            }
-          }
-        } catch (err) {
-          console.error("ZIP load error:", err);
-          setStatus({ type: "error", message: "Gagal memproses file ZIP." });
-          completedWorkItems++;
-        }
+        zipFiles.push(file);
       } else {
+        regularFiles.push({ file, filePath });
+      }
+    }
+
+    for (const file of zipFiles) {
+      try {
+        setCurrentDirectory(""); // Reset for safety
         setUploadProgress({
           isUploading: true,
-          percent: Math.round((completedWorkItems / totalWorkItems) * 100),
-          currentFile: filePath,
+          percent: Math.min(95, Math.round((completedWorkItems / totalWorkItems) * 100)),
+          currentFile: `Mengekstrak ${file.name}...`,
           processed: completedWorkItems,
           total: totalWorkItems,
           completed: false,
         });
 
-        const content = await new Promise<string>((resolve) => {
-          const reader = new FileReader();
-          reader.onprogress = (event) => {
-            if (event.lengthComputable && event.total > 0) {
-              const fileRatio = event.loaded / event.total;
-              const overallPercent = Math.round(((completedWorkItems + fileRatio) / totalWorkItems) * 100);
-              setUploadProgress((prev) =>
-                prev
-                  ? {
-                      ...prev,
-                      percent: Math.min(99, overallPercent),
-                      currentFile: filePath,
-                    }
-                  : null
-              );
-            }
-          };
-          reader.onload = (event) => resolve((event.target?.result as string) ?? "");
-          reader.readAsText(file);
-        });
-        newFilesList.push({ path: filePath, content });
+        const zip = await JSZip.loadAsync(file);
+        const zipEntries = Object.keys(zip.files).filter((filename) => !zip.files[filename].dir);
+        totalWorkItems = totalWorkItems - 1 + Math.max(1, zipEntries.length);
+
+        if (zipEntries.length === 0) {
+          completedWorkItems++;
+        } else {
+          const ZIP_CHUNK_SIZE = 40;
+          for (let c = 0; c < zipEntries.length; c += ZIP_CHUNK_SIZE) {
+            const chunk = zipEntries.slice(c, c + ZIP_CHUNK_SIZE);
+            const extracted = await Promise.all(
+              chunk.map(async (filename) => {
+                const content = await zip.files[filename].async("string");
+                return { path: filename, content };
+              })
+            );
+            newFilesList.push(...extracted);
+            completedWorkItems += chunk.length;
+            setUploadProgress({
+              isUploading: true,
+              percent: Math.round((completedWorkItems / totalWorkItems) * 100),
+              currentFile: chunk[chunk.length - 1],
+              processed: completedWorkItems,
+              total: totalWorkItems,
+              completed: false,
+            });
+          }
+        }
+      } catch (err) {
+        console.error("ZIP load error:", err);
+        setStatus({ type: "error", message: "Gagal memproses file ZIP." });
         completedWorkItems++;
-        setUploadProgress({
-          isUploading: true,
-          percent: Math.round((completedWorkItems / totalWorkItems) * 100),
-          currentFile: filePath,
-          processed: completedWorkItems,
-          total: totalWorkItems,
-          completed: false,
-        });
       }
+    }
+
+    const FILE_CHUNK_SIZE = 30;
+    for (let c = 0; c < regularFiles.length; c += FILE_CHUNK_SIZE) {
+      const chunk = regularFiles.slice(c, c + FILE_CHUNK_SIZE);
+      const readResults = await Promise.all(
+        chunk.map(
+          ({ file, filePath }) =>
+            new Promise<GitHubFile>((resolve) => {
+              const reader = new FileReader();
+              if (regularFiles.length === 1) {
+                reader.onprogress = (event) => {
+                  if (event.lengthComputable && event.total > 0) {
+                    const fileRatio = event.loaded / event.total;
+                    const overallPercent = Math.round(((completedWorkItems + fileRatio) / totalWorkItems) * 100);
+                    setUploadProgress((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            percent: Math.min(99, overallPercent),
+                            currentFile: filePath,
+                          }
+                        : null
+                    );
+                  }
+                };
+              }
+              reader.onload = (event) => resolve({ path: filePath, content: (event.target?.result as string) ?? "" });
+              reader.readAsText(file);
+            })
+        )
+      );
+      newFilesList.push(...readResults);
+      completedWorkItems += chunk.length;
+      setUploadProgress({
+        isUploading: true,
+        percent: Math.round((completedWorkItems / totalWorkItems) * 100),
+        currentFile: chunk[chunk.length - 1].filePath,
+        processed: completedWorkItems,
+        total: totalWorkItems,
+        completed: false,
+      });
     }
 
     let updatedCount = 0;
@@ -799,6 +903,10 @@ export default function App() {
     setLoading(true);
     setStatus(null);
     const startTime = performance.now();
+    const wakeLock = await acquireWakeLock();
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
 
     const totalCandidates = nonEmptyFiles.length;
 
@@ -934,46 +1042,48 @@ export default function App() {
         content?: string;
       };
 
-      const uploadBlobsParallel = async (maxConcurrency: number): Promise<TreeEntry[]> => {
-        const blobs: TreeEntry[] = new Array(totalBlobs);
+      const uploadBlobsParallel = async (subset: GitHubFile[], maxConcurrency: number, baseProcessedOffset = 0): Promise<TreeEntry[]> => {
+        const subsetLen = subset.length;
+        const blobs: TreeEntry[] = new Array(subsetLen);
         let completedBlobs = 0;
         let nextIndex = 0;
-        const concurrency = Math.min(maxConcurrency, Math.max(1, totalBlobs));
+        const concurrency = Math.min(maxConcurrency, Math.max(1, subsetLen));
 
-        const createBlobWithRetry = async (content: string, retries = 2) => {
-          for (let attempt = 0; attempt <= retries; attempt++) {
-            try {
-              return await octokit.rest.git.createBlob({
+        const createBlobWithRetry = async (content: string) => {
+          return runWithResume(
+            () =>
+              octokit.rest.git.createBlob({
                 owner,
                 repo,
                 content,
                 encoding: "utf-8",
-              });
-            } catch (err: any) {
-              const isRateOrTransient = err?.status === 403 || err?.status === 429 || err?.status >= 500;
-              if (attempt < retries && isRateOrTransient) {
-                await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
-                continue;
-              }
-              throw err;
-            }
-          }
-          throw new Error("Failed to create blob");
+              }),
+            () =>
+              setPushProgress((prev) =>
+                prev
+                  ? {
+                      ...prev,
+                      stage: "Dijeda saat pindah app — otomatis lanjut saat kembali...",
+                    }
+                  : null
+              )
+          );
         };
 
         const worker = async () => {
-          while (nextIndex < totalBlobs) {
+          while (nextIndex < subsetLen) {
             const currentIndex = nextIndex++;
-            const f = filesToUpload[currentIndex];
+            const f = subset[currentIndex];
             const { data: blob } = await createBlobWithRetry(f.content);
             blobs[currentIndex] = { path: f.path, sha: blob.sha, mode: "100644", type: "blob" };
             completedBlobs++;
-            const blobPercent = totalBlobs > 0 ? 15 + Math.round((completedBlobs / totalBlobs) * 65) : 80;
+            const totalDone = baseProcessedOffset + completedBlobs;
+            const blobPercent = totalBlobs > 0 ? 15 + Math.round((totalDone / totalBlobs) * 70) : 85;
             setPushProgress({
               isPushing: true,
               percent: blobPercent,
               stage: f.path,
-              processed: completedBlobs,
+              processed: totalDone,
               total: totalBlobs,
               completed: false,
               skipped: skippedCount,
@@ -982,89 +1092,156 @@ export default function App() {
           }
         };
 
-        if (totalBlobs > 0) {
+        if (subsetLen > 0) {
           await Promise.all(Array.from({ length: concurrency }, () => worker()));
         }
         return blobs;
       };
 
-      let treeDataSha = "";
-      let usedStrategy = boosterMode ? "15x Paralel" : "Standar";
+      let treeDataSha = baseTreeSha;
+      let usedStrategy = boosterMode ? "Batch Tree" : "Standar";
 
-      // Check if eligible for 1-Shot Inline Tree (<= 150 changed files and <= 2 MB total UTF-8 payload)
-      const encoder = new TextEncoder();
-      const totalPayloadBytes = boosterMode
-        ? filesToUpload.reduce((acc, f) => acc + encoder.encode(f.content).length, 0)
-        : Infinity;
-      const canUseInlineTree = boosterMode && totalBlobs > 0 && totalBlobs <= 150 && totalPayloadBytes <= 2 * 1024 * 1024;
+      if (boosterMode && totalBlobs > 0) {
+        const encoder = new TextEncoder();
+        const MAX_FILES_PER_BATCH = 200;
+        const MAX_BYTES_PER_BATCH = 1.5 * 1024 * 1024; // 1.5 MB safe JSON batch
 
-      if (canUseInlineTree) {
-        try {
-          setPushProgress({
-            isPushing: true,
-            percent: 45,
-            stage: `Booster 1-Shot: Mengirim ${totalBlobs} file sekaligus...`,
-            processed: totalBlobs,
-            total: totalBlobs,
-            completed: false,
-            skipped: skippedCount,
-            modeLabel: "1-SHOT TREE",
-          });
+        const batches: GitHubFile[][] = [];
+        const largeFiles: GitHubFile[] = [];
+        let currentBatch: GitHubFile[] = [];
+        let currentBatchBytes = 0;
 
-          const inlineTree: TreeEntry[] = filesToUpload.map((f) => ({
-            path: f.path,
-            mode: "100644",
-            type: "blob",
-            content: f.content,
-          }));
-
-          const { data: treeData } = await octokit.rest.git.createTree({
-            owner,
-            repo,
-            base_tree: baseTreeSha,
-            tree: inlineTree,
-          });
-          treeDataSha = treeData.sha;
-          usedStrategy = "1-Shot Tree";
-        } catch (inlineErr: any) {
-          if (inlineErr?.status === 404 && hasWorkflowFiles) {
-            throw inlineErr;
+        for (const f of filesToUpload) {
+          const byteLen = encoder.encode(f.content).length;
+          if (byteLen > MAX_BYTES_PER_BATCH) {
+            largeFiles.push(f);
+            continue;
           }
-          console.warn("1-Shot Inline Tree fallback to 15x Parallel blobs:", inlineErr);
-          const blobs = await uploadBlobsParallel(15);
+          if (
+            currentBatch.length >= MAX_FILES_PER_BATCH ||
+            (currentBatch.length > 0 && currentBatchBytes + byteLen > MAX_BYTES_PER_BATCH)
+          ) {
+            batches.push(currentBatch);
+            currentBatch = [];
+            currentBatchBytes = 0;
+          }
+          currentBatch.push(f);
+          currentBatchBytes += byteLen;
+        }
+        if (currentBatch.length > 0) {
+          batches.push(currentBatch);
+        }
+
+        let currentTreeSha = baseTreeSha;
+        let processedSoFar = 0;
+        const totalBatches = batches.length + (largeFiles.length > 0 ? 1 : 0);
+
+        if (batches.length === 1 && largeFiles.length === 0) {
+          usedStrategy = "1-Shot Tree";
+        } else {
+          usedStrategy = `Batch Tree (${totalBatches}x)`;
+        }
+
+        for (let bIdx = 0; bIdx < batches.length; bIdx++) {
+          const batch = batches[bIdx];
+          const batchLabel = batches.length === 1 && largeFiles.length === 0 ? "1-SHOT TREE" : `BATCH ${bIdx + 1}/${totalBatches}`;
+
           setPushProgress({
             isPushing: true,
-            percent: 85,
-            stage: "Membuat Git Tree...",
-            processed: totalBlobs,
+            percent: 15 + Math.round((processedSoFar / totalBlobs) * 70),
+            stage:
+              batches.length === 1 && largeFiles.length === 0
+                ? `Booster 1-Shot: Mengirim ${batch.length} file sekaligus...`
+                : `Booster Batch ${bIdx + 1}/${totalBatches}: Mengirim ${batch.length} file...`,
+            processed: processedSoFar,
             total: totalBlobs,
             completed: false,
             skipped: skippedCount,
-            modeLabel: "BOOSTER 15x",
+            modeLabel: batchLabel,
           });
+
+          try {
+            const inlineTree: TreeEntry[] = batch.map((f) => ({
+              path: f.path,
+              mode: "100644",
+              type: "blob",
+              content: f.content,
+            }));
+
+            const { data: treeData } = await runWithResume(
+              () =>
+                octokit.rest.git.createTree({
+                  owner,
+                  repo,
+                  base_tree: currentTreeSha,
+                  tree: inlineTree,
+                }),
+              () =>
+                setPushProgress((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        stage: "Dijeda saat pindah app — otomatis lanjut saat kembali...",
+                      }
+                    : null
+                )
+            );
+            currentTreeSha = treeData.sha;
+            processedSoFar += batch.length;
+
+            setPushProgress({
+              isPushing: true,
+              percent: 15 + Math.round((processedSoFar / totalBlobs) * 70),
+              stage: `Batch ${bIdx + 1}/${totalBatches} selesai`,
+              processed: processedSoFar,
+              total: totalBlobs,
+              completed: false,
+              skipped: skippedCount,
+              modeLabel: batchLabel,
+            });
+          } catch (batchErr: any) {
+            if (batchErr?.status === 404 && hasWorkflowFiles) {
+              throw batchErr;
+            }
+            console.warn(`Batch ${bIdx + 1} inline createTree failed, falling back to 15x parallel blobs:`, batchErr);
+            const blobs = await uploadBlobsParallel(batch, 15, processedSoFar);
+            const { data: treeData } = await octokit.rest.git.createTree({
+              owner,
+              repo,
+              base_tree: currentTreeSha,
+              tree: blobs,
+            });
+            currentTreeSha = treeData.sha;
+            processedSoFar += batch.length;
+          }
+        }
+
+        if (largeFiles.length > 0) {
+          const largeBlobs = await uploadBlobsParallel(largeFiles, 15, processedSoFar);
           const { data: treeData } = await octokit.rest.git.createTree({
             owner,
             repo,
-            base_tree: baseTreeSha,
-            tree: blobs,
+            base_tree: currentTreeSha,
+            tree: largeBlobs,
           });
-          treeDataSha = treeData.sha;
+          currentTreeSha = treeData.sha;
+          processedSoFar += largeFiles.length;
         }
+
+        treeDataSha = currentTreeSha;
       } else {
         setPushProgress({
           isPushing: true,
           percent: 15,
-          stage: totalBlobs > 0
-            ? (boosterMode ? `Booster 15x: Mengunggah ${totalBlobs} file...` : "Mengunggah file ke GitHub...")
-            : "Mempersiapkan tree...",
+          stage: totalBlobs > 0 ? "Mengunggah file ke GitHub..." : "Mempersiapkan tree...",
           processed: 0,
           total: totalBlobs,
           completed: false,
           skipped: skippedCount,
-          modeLabel: boosterMode ? "BOOSTER 15x" : "STANDAR",
+          modeLabel: "STANDAR",
         });
 
-        const blobs = await uploadBlobsParallel(boosterMode ? 15 : 5);
+        const blobs = await uploadBlobsParallel(filesToUpload, 5, 0);
 
         // 3. Create Tree
         setPushProgress({
@@ -1075,7 +1252,7 @@ export default function App() {
           total: totalBlobs,
           completed: false,
           skipped: skippedCount,
-          modeLabel: boosterMode ? "BOOSTER 15x" : "STANDAR",
+          modeLabel: "STANDAR",
         });
         const { data: treeData } = await octokit.rest.git.createTree({
           owner,
@@ -1097,13 +1274,15 @@ export default function App() {
         skipped: skippedCount,
         modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
-      const { data: commitData } = await octokit.rest.git.createCommit({
-        owner,
-        repo,
-        message: commitMessage,
-        tree: treeDataSha,
-        parents: [latestCommitSha],
-      });
+      const { data: commitData } = await runWithResume(() =>
+        octokit.rest.git.createCommit({
+          owner,
+          repo,
+          message: commitMessage,
+          tree: treeDataSha,
+          parents: [latestCommitSha],
+        })
+      );
 
       // 5. Update Ref
       setPushProgress({
@@ -1116,12 +1295,14 @@ export default function App() {
         skipped: skippedCount,
         modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
-      await octokit.rest.git.updateRef({
-        owner,
-        repo,
-        ref: `heads/${branch}`,
-        sha: commitData.sha,
-      });
+      await runWithResume(() =>
+        octokit.rest.git.updateRef({
+          owner,
+          repo,
+          ref: `heads/${branch}`,
+          sha: commitData.sha,
+        })
+      );
 
       const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
       setPushProgress({
@@ -1140,6 +1321,7 @@ export default function App() {
           ? `⚡ Booster Push berhasil dalam ${elapsed} dtk! ${totalBlobs} file dikirim${skippedCount > 0 ? `, ${skippedCount} file sama dilewati` : ""} (${usedStrategy}).`
           : `Successfully pushed ${files.length} files to ${selectedRepo.full_name}!`,
       });
+      sendBrowserNotification("Push ke GitHub Selesai!", `${totalBlobs} file berhasil di-push ke ${selectedRepo.full_name} dalam ${elapsed} dtk.`);
       setFiles([]);
       setEditingFile(null);
     } catch (err: any) {
@@ -1164,6 +1346,7 @@ export default function App() {
         setStatus({ type: "error", message: `Push failed: ${err.message}` });
       }
     } finally {
+      wakeLock?.release?.().catch?.(() => {});
       setLoading(false);
     }
   };
@@ -1504,7 +1687,7 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-[10px] font-bold text-gray-800 truncate">
-                  Skip file identik (SHA-1) + 1-Shot Tree / 15x Paralel
+                  Skip file identik (SHA-1) + Batch Tree (200 file/req)
                 </p>
               </div>
             </div>
