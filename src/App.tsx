@@ -5,6 +5,15 @@ import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCirc
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
+import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
+import { Browser } from "@capacitor/browser";
+
+const isNativeApk = Capacitor.isNativePlatform();
+const API_BASE_URL = (
+  (import.meta as any).env?.VITE_API_BASE_URL ||
+  (isNativeApk ? "https://gitpush.axeoncore.my.id" : "")
+).replace(/\/$/, "");
 
 interface GitHubFile {
   path: string;
@@ -162,6 +171,8 @@ export default function App() {
   
   // Security & Anti-Inspect System
   useEffect(() => {
+    if (isNativeApk) return;
+
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault();
       setSecurityWarning("WARNING: PENGGUNAAN KLIK KANAN DILARANG! PERCOBAAN MELIHAT KODE AKAN MENGAKIBATKAN BANNED PERMANEN.");
@@ -221,7 +232,31 @@ export default function App() {
       }
     };
     window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
+
+    let appUrlListener: Promise<{ remove: () => Promise<void> }> | null = null;
+    if (isNativeApk) {
+      appUrlListener = CapApp.addListener("appUrlOpen", ({ url }) => {
+        if (url && url.startsWith("gitfastpush://auth")) {
+          try {
+            const parsed = new URL(url);
+            const newToken = parsed.searchParams.get("token");
+            if (newToken) {
+              localStorage.setItem("gh_token", newToken);
+              setToken(newToken);
+            }
+          } catch (err) {
+            console.error("Failed to parse OAuth deep link:", err);
+          } finally {
+            Browser.close().catch(() => {});
+          }
+        }
+      });
+    }
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      appUrlListener?.then((handle) => handle.remove()).catch(() => {});
+    };
   }, []);
 
   // Fetch Repo Files (Tree)
@@ -356,7 +391,10 @@ export default function App() {
 
   const handleLogin = async () => {
     try {
-      const resp = await fetch("/api/auth/url");
+      const authEndpoint = isNativeApk
+        ? `${API_BASE_URL}/api/auth/url?mode=apk`
+        : "/api/auth/url";
+      const resp = await fetch(authEndpoint);
       const data = await resp.json();
       
       if (data.error) {
@@ -365,7 +403,11 @@ export default function App() {
       }
       
       if (data.url) {
-        window.open(data.url, "GitHub OAuth", "width=600,height=700");
+        if (isNativeApk) {
+          await Browser.open({ url: data.url });
+        } else {
+          window.open(data.url, "GitHub OAuth", "width=600,height=700");
+        }
       } else {
         throw new Error("Invalid response from server");
       }

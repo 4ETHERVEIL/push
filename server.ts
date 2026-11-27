@@ -25,18 +25,22 @@ async function startServer() {
 
   // 1. Get OAuth URL
   app.get("/api/auth/url", (req, res) => {
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    const isApk = req.query.mode === "apk";
+    const statePrefix = isApk ? "apk_" : "web_";
+
     const params = new URLSearchParams({
       client_id: GITHUB_CLIENT_ID || "",
       redirect_uri: `${APP_URL}/auth/callback`,
       scope: "repo,delete_repo,workflow",
-      state: Math.random().toString(36).substring(7),
+      state: `${statePrefix}${Math.random().toString(36).substring(7)}`,
     });
     res.json({ url: `https://github.com/login/oauth/authorize?${params.toString()}` });
   });
 
   // 2. OAuth Callback
   app.get(["/auth/callback", "/auth/callback/"], async (req, res) => {
-    const { code } = req.query;
+    const { code, state } = req.query;
 
     if (!code) {
       return res.status(400).send("Code not found");
@@ -58,6 +62,28 @@ async function startServer() {
       );
 
       const { access_token } = response.data;
+      const isApk = typeof state === "string" && state.startsWith("apk_");
+
+      if (isApk) {
+        const deepLinkUrl = `gitfastpush://auth?token=${encodeURIComponent(access_token || "")}`;
+        return res.send(`
+          <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            </head>
+            <body style="font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #FFD600; padding: 1rem;">
+              <div style="padding: 2rem; border: 4px solid black; background: white; box-shadow: 8px 8px 0px black; text-align: center; max-width: 360px; width: 100%;">
+                <h1 style="margin: 0 0 0.75rem 0; font-size: 1.5rem;">Login Berhasil!</h1>
+                <p style="margin: 0 0 1.25rem 0; font-weight: bold;">Mengembalikan Anda ke aplikasi GitHub Fast Push...</p>
+                <a href="${deepLinkUrl}" style="display: inline-block; padding: 0.75rem 1.25rem; background: #FFD600; color: black; font-weight: 900; text-decoration: none; border: 4px solid black; box-shadow: 4px 4px 0px black;">BUKA APLIKASI</a>
+                <script>
+                  window.location.href = ${JSON.stringify(deepLinkUrl)};
+                </script>
+              </div>
+            </body>
+          </html>
+        `);
+      }
 
       // Send token back to parent window
       res.send(`
