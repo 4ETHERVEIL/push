@@ -3,6 +3,10 @@
   "appName": "GitHub Fast Push",
   "webDir": "dist",
   "server": {
-    "androidScheme": "https"
+    "url": "https://gitpush.axeoncore.my.id",
+    "androidScheme": "https",
+    "allowNavigation": [
+      "gitpush.axeoncore.my.id"
+    ]
   }
 }
