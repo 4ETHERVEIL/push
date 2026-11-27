@@ -17,18 +17,6 @@ interface Repository {
   default_branch: string;
 }
 
-async function computeGitBlobSha(content: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const contentBytes = encoder.encode(content);
-  const headerBytes = encoder.encode(`blob ${contentBytes.length}\0`);
-  const combined = new Uint8Array(headerBytes.length + contentBytes.length);
-  combined.set(headerBytes, 0);
-  combined.set(contentBytes, headerBytes.length);
-  const hashBuffer = await crypto.subtle.digest("SHA-1", combined);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 function waitForVisibleAndOnline(): Promise<void> {
   return new Promise((resolve) => {
     const check = () => {
@@ -138,7 +126,6 @@ export default function App() {
     processed: number;
     total: number;
     completed: boolean;
-    skipped?: number;
     modeLabel?: string;
   } | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<{
@@ -913,7 +900,7 @@ export default function App() {
     setPushProgress({
       isPushing: true,
       percent: 5,
-      stage: boosterMode ? "Booster: Mengambil referensi & tree..." : "Mengambil referensi branch...",
+      stage: boosterMode ? "Booster: Mengambil referensi branch..." : "Mengambil referensi branch...",
       processed: 0,
       total: totalCandidates,
       completed: false,
@@ -956,83 +943,8 @@ export default function App() {
       });
       const baseTreeSha = latestCommitData.tree.sha;
 
-      let filesToUpload = nonEmptyFiles;
-      let skippedCount = 0;
-
-      // Booster Step: Compare local Git Blob SHA-1 against remote tree SHAs to skip identical files
-      if (boosterMode && totalCandidates > 0 && typeof crypto !== "undefined" && crypto.subtle) {
-        try {
-          setPushProgress({
-            isPushing: true,
-            percent: 10,
-            stage: "Booster: Memindai perbedaan SHA-1...",
-            processed: 0,
-            total: totalCandidates,
-            completed: false,
-            modeLabel: "BOOSTER",
-          });
-
-          const { data: remoteTreeData } = await octokit.rest.git.getTree({
-            owner,
-            repo,
-            tree_sha: baseTreeSha,
-            recursive: "true",
-          });
-
-          const remoteShaMap = new Map<string, string>();
-          for (const item of remoteTreeData.tree) {
-            if (item.type === "blob" && item.path && item.sha) {
-              remoteShaMap.set(item.path, item.sha);
-            }
-          }
-
-          const localShas = await Promise.all(
-            nonEmptyFiles.map(async (f) => ({
-              file: f,
-              sha: await computeGitBlobSha(f.content),
-            }))
-          );
-
-          const changed: GitHubFile[] = [];
-          for (const entry of localShas) {
-            const remoteSha = remoteShaMap.get(entry.file.path);
-            if (remoteSha && remoteSha === entry.sha) {
-              skippedCount++;
-            } else {
-              changed.push(entry.file);
-            }
-          }
-          filesToUpload = changed;
-        } catch (diffErr) {
-          console.warn("Booster SHA diff skipped, uploading all files:", diffErr);
-          filesToUpload = nonEmptyFiles;
-          skippedCount = 0;
-        }
-      }
-
+      const filesToUpload = nonEmptyFiles;
       const totalBlobs = filesToUpload.length;
-
-      // If Booster detected zero changes needed
-      if (boosterMode && totalCandidates > 0 && totalBlobs === 0) {
-        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-        setPushProgress({
-          isPushing: false,
-          percent: 100,
-          stage: `Semua ${skippedCount} file sudah sama (${elapsed} dtk)`,
-          processed: 0,
-          total: 0,
-          completed: true,
-          skipped: skippedCount,
-          modeLabel: "BOOSTER",
-        });
-        setStatus({
-          type: "success",
-          message: `⚡ Booster Push: Semua ${skippedCount} file sudah identik dengan GitHub (${elapsed} dtk) — tidak ada perubahan perlu di-push.`,
-        });
-        setFiles([]);
-        setEditingFile(null);
-        return;
-      }
 
       type TreeEntry = {
         path: string;
@@ -1086,7 +998,6 @@ export default function App() {
               processed: totalDone,
               total: totalBlobs,
               completed: false,
-              skipped: skippedCount,
               modeLabel: boosterMode ? "BOOSTER 15x" : "STANDAR",
             });
           }
@@ -1156,7 +1067,6 @@ export default function App() {
             processed: processedSoFar,
             total: totalBlobs,
             completed: false,
-            skipped: skippedCount,
             modeLabel: batchLabel,
           });
 
@@ -1196,7 +1106,6 @@ export default function App() {
               processed: processedSoFar,
               total: totalBlobs,
               completed: false,
-              skipped: skippedCount,
               modeLabel: batchLabel,
             });
           } catch (batchErr: any) {
@@ -1237,7 +1146,6 @@ export default function App() {
           processed: 0,
           total: totalBlobs,
           completed: false,
-          skipped: skippedCount,
           modeLabel: "STANDAR",
         });
 
@@ -1251,7 +1159,6 @@ export default function App() {
           processed: totalBlobs,
           total: totalBlobs,
           completed: false,
-          skipped: skippedCount,
           modeLabel: "STANDAR",
         });
         const { data: treeData } = await octokit.rest.git.createTree({
@@ -1271,7 +1178,6 @@ export default function App() {
         processed: totalBlobs,
         total: totalBlobs,
         completed: false,
-        skipped: skippedCount,
         modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
       const { data: commitData } = await runWithResume(() =>
@@ -1292,7 +1198,6 @@ export default function App() {
         processed: totalBlobs,
         total: totalBlobs,
         completed: false,
-        skipped: skippedCount,
         modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
       await runWithResume(() =>
@@ -1312,13 +1217,12 @@ export default function App() {
         processed: totalBlobs,
         total: totalBlobs,
         completed: true,
-        skipped: skippedCount,
         modeLabel: boosterMode ? usedStrategy : "STANDAR",
       });
       setStatus({
         type: "success",
         message: boosterMode
-          ? `⚡ Booster Push berhasil dalam ${elapsed} dtk! ${totalBlobs} file dikirim${skippedCount > 0 ? `, ${skippedCount} file sama dilewati` : ""} (${usedStrategy}).`
+          ? `⚡ Booster Push berhasil dalam ${elapsed} dtk! ${totalBlobs} file dikirim (${usedStrategy}).`
           : `Successfully pushed ${files.length} files to ${selectedRepo.full_name}!`,
       });
       sendBrowserNotification("Push ke GitHub Selesai!", `${totalBlobs} file berhasil di-push ke ${selectedRepo.full_name} dalam ${elapsed} dtk.`);
@@ -1687,7 +1591,7 @@ export default function App() {
                   </span>
                 </div>
                 <p className="text-[10px] font-bold text-gray-800 truncate">
-                  Skip file identik (SHA-1) + Batch Tree (200 file/req)
+                  Kirim cepat pakai Batch Tree (200 file/req)
                 </p>
               </div>
             </div>
@@ -1765,11 +1669,7 @@ export default function App() {
                 </div>
                 <div className="flex justify-between items-center mt-1.5 text-[10px] font-black uppercase text-gray-600">
                   <span className="truncate mr-2">
-                    {pushProgress.completed
-                      ? pushProgress.stage
-                      : pushProgress.skipped
-                        ? `${pushProgress.skipped} file sama dilewati`
-                        : "Mengirim ke GitHub..."}
+                    {pushProgress.completed ? pushProgress.stage : "Mengirim ke GitHub..."}
                   </span>
                   <span className="shrink-0">
                     {pushProgress.processed} / {pushProgress.total} file
