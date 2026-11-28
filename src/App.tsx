@@ -14,6 +14,7 @@ import {
   auth,
   db,
   ADMIN_BOOTSTRAP_EMAIL,
+  ADMIN_BOOTSTRAP_GITHUB_ID,
   BroadcastItem,
   OperationType,
   handleFirestoreError,
@@ -247,7 +248,18 @@ export default function App() {
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
-      if (!fbUser || !fbUser.emailVerified) {
+      if (!fbUser) {
+        setIsFirebaseAdmin(false);
+        return;
+      }
+      const isBootstrapGithub = fbUser.providerData.some(
+        (p) => p.providerId === "github.com" && p.uid === ADMIN_BOOTSTRAP_GITHUB_ID
+      );
+      if (isBootstrapGithub) {
+        setIsFirebaseAdmin(true);
+        return;
+      }
+      if (!fbUser.emailVerified) {
         setIsFirebaseAdmin(false);
         return;
       }

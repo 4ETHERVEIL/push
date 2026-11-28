@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, GoogleAuthProvider } from "firebase/auth";
+import { getAuth, GithubAuthProvider, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore, doc, getDocFromServer, Timestamp } from "firebase/firestore";
 import firebaseConfig from "../firebase-applet-config.json";
 
@@ -7,10 +7,15 @@ const app = initializeApp(firebaseConfig);
 
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+export const githubProvider = new GithubAuthProvider();
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({ prompt: "select_account" });
 
+export const firebaseProjectId = firebaseConfig.projectId;
+export const firebaseAuthDomain = firebaseConfig.authDomain;
 export const ADMIN_BOOTSTRAP_EMAIL = "afrigaming08@gmail.com";
+export const ADMIN_BOOTSTRAP_GITHUB_ID = "229562872";
+export const ADMIN_BOOTSTRAP_GITHUB_LOGIN = "4ETHERVEIL";
 
 export const BROADCAST_LIMITS = {
   TITLE_MIN: 1,

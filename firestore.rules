@@ -26,11 +26,18 @@ service cloud.firestore {
       return isSignedIn() && request.auth.token.email_verified == true;
     }
 
+    function isGithubBootstrapAdmin() {
+      return isSignedIn()
+        && request.auth.token.firebase.sign_in_provider == 'github.com'
+        && 'github.com' in request.auth.token.firebase.identities
+        && '229562872' in request.auth.token.firebase.identities['github.com'];
+    }
+
     function isAdmin() {
-      return isEmailVerified() && (
+      return (isEmailVerified() && (
         request.auth.token.email == 'afrigaming08@gmail.com' ||
         exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
+      )) || isGithubBootstrapAdmin();
     }
 
     function isValidBroadcast(data) {

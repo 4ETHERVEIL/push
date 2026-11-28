@@ -1,7 +1,7 @@
 # Firestore Security Specification
 
 ## 1. Data Invariants
-- `/broadcasts/{broadcastId}` documents MUST only be created, updated, or deleted by a verified admin (`isAdmin()`).
+- `/broadcasts/{broadcastId}` documents MUST only be created, updated, or deleted by a verified admin (`isAdmin()`, verified bootstrap email, GitHub bootstrap ID `229562872` via `github.com` provider, or `/admins/{uid}` registry).
 - Public clients (web and APK) can only `get` or `list` `/broadcasts` documents where `active == true`; inactive/archived broadcasts are restricted to admins.
 - `/broadcasts` documents MUST NOT contain PII (`email`, phone, etc.) and MUST strictly enforce `kind`, `variant`, field sizes, `https://` action URLs, immutable `authorUid`/`createdAt`, and server timestamps (`request.time`).
 - `/admins/{adminId}` documents contain admin `email` (PII) and MUST only be readable by the matching user (`uid == adminId`) or an existing admin, and writable exclusively by an existing admin (`isAdmin()`).

@@ -26,12 +26,19 @@ import {
   Eye,
   CheckCircle2,
   AlertCircle,
+  Github,
+  ExternalLink,
+  Copy,
 } from "lucide-react";
 import {
   auth,
   db,
+  githubProvider,
   googleProvider,
+  firebaseProjectId,
+  firebaseAuthDomain,
   ADMIN_BOOTSTRAP_EMAIL,
+  ADMIN_BOOTSTRAP_GITHUB_LOGIN,
   BROADCAST_LIMITS,
   BroadcastItem,
   BroadcastKind,
@@ -69,6 +76,8 @@ export function AdminPanelModal({
 
   const [submitting, setSubmitting] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
+  const [githubSetupNeeded, setGithubSetupNeeded] = useState(false);
+  const [copiedCallback, setCopiedCallback] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
   const [allBroadcasts, setAllBroadcasts] = useState<BroadcastItem[]>([]);
@@ -124,30 +133,77 @@ export function AdminPanelModal({
 
   if (!isOpen) return null;
 
-  const handleGoogleLogin = async () => {
+  const callbackUrl = `https://${firebaseAuthDomain}/__/auth/handler`;
+  const firebaseProvidersUrl = `https://console.firebase.google.com/project/${firebaseProjectId}/authentication/providers`;
+
+  const handleCopyCallback = async () => {
+    try {
+      await navigator.clipboard.writeText(callbackUrl);
+      setCopiedCallback(true);
+      setTimeout(() => setCopiedCallback(false), 2000);
+    } catch {
+      // Ignore clipboard errors
+    }
+  };
+
+  const handleAuthError = (err: any, providerLabel: "GitHub" | "Google") => {
+    const code = String(err?.code || "");
+    const msg = String(err?.message || "");
+    if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+      return;
+    }
+    if (code === "auth/popup-blocked" || msg.includes("popup-blocked")) {
+      setFeedback({ type: "error", text: "Popup login diblokir browser. Izinkan popup lalu coba lagi." });
+    } else if (code === "auth/operation-not-allowed") {
+      if (providerLabel === "GitHub") {
+        setGithubSetupNeeded(true);
+      }
+      setFeedback({
+        type: "error",
+        text: `Provider ${providerLabel} belum diaktifkan di Firebase Console. Aktifkan dulu di Firebase Authentication atau gunakan tombol Login Google di bawah.`,
+      });
+    } else if (code === "auth/account-exists-with-different-credential") {
+      setFeedback({
+        type: "error",
+        text: "Email ini sudah terdaftar di Firebase dengan metode login lain. Gunakan login Google atau hapus/tautkan akun di Firebase Authentication.",
+      });
+    } else if (isNativeApk) {
+      setFeedback({
+        type: "error",
+        text: `Login ${providerLabel} Admin tidak didukung di dalam WebView APK. Buka versi web (https://gitpush.axeoncore.my.id) di browser untuk mengirim siaran ke semua APK.`,
+      });
+    } else {
+      setFeedback({ type: "error", text: `Gagal login ${providerLabel}: ${err?.message || "Coba lagi"}` });
+    }
+  };
+
+  const handleGithubLogin = async () => {
     setAuthLoading(true);
     setFeedback(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithPopup(auth, githubProvider);
+      setGithubSetupNeeded(false);
     } catch (err: any) {
-      console.error("Google Sign-In Error:", err);
-      const msg = String(err?.message || "");
-      if (msg.includes("popup-blocked")) {
-        setFeedback({ type: "error", text: "Popup login diblokir browser. Izinkan popup lalu coba lagi." });
-      } else if (isNativeApk) {
-        setFeedback({
-          type: "error",
-          text: "Login Google Admin tidak didukung di dalam WebView APK. Buka versi web (https://gitpush.axeoncore.my.id) di browser untuk mengirim siaran ke semua APK.",
-        });
-      } else {
-        setFeedback({ type: "error", text: `Gagal login Google: ${err?.message || "Coba lagi"}` });
-      }
+      handleAuthError(err, "GitHub");
     } finally {
       setAuthLoading(false);
     }
   };
 
-  const handleGoogleLogout = async () => {
+  const handleGoogleLogin = async () => {
+    setAuthLoading(true);
+    setFeedback(null);
+    try {
+      await signInWithPopup(auth, googleProvider);
+      setGithubSetupNeeded(false);
+    } catch (err: any) {
+      handleAuthError(err, "Google");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
     await signOut(auth);
     setFeedback(null);
   };
@@ -297,7 +353,7 @@ export function AdminPanelModal({
       return;
     }
     if (!email || !email.includes("@")) {
-      setFeedback({ type: "error", text: "Masukkan email Google yang valid." });
+      setFeedback({ type: "error", text: "Masukkan email akun yang valid." });
       return;
     }
     setSubmitting(true);
@@ -354,9 +410,11 @@ export function AdminPanelModal({
           <div className="flex items-center gap-3 shrink-0">
             {firebaseUser && (
               <div className="hidden sm:flex items-center gap-2 text-xs font-bold text-gray-300">
-                <span className="truncate max-w-[180px]">{firebaseUser.email}</span>
+                <span className="truncate max-w-[180px]">
+                  {firebaseUser.displayName || firebaseUser.email || firebaseUser.uid}
+                </span>
                 <button
-                  onClick={handleGoogleLogout}
+                  onClick={handleLogout}
                   className="p-1.5 border border-gray-600 hover:bg-white hover:text-black transition-colors"
                   title="Keluar Akun Admin"
                 >
@@ -396,27 +454,81 @@ export function AdminPanelModal({
           {!firebaseUser ? (
             <div className="bg-white border-4 border-black p-6 shadow-[6px_6px_0px_black] text-center space-y-4">
               <div className="w-14 h-14 bg-[#FFD600] border-4 border-black mx-auto flex items-center justify-center">
-                <Shield size={28} className="text-black" />
+                <Github size={28} className="text-black" />
               </div>
               <div className="space-y-2">
                 <h4 className="text-lg font-black uppercase">Verifikasi Akun Admin</h4>
                 <p className="text-xs font-bold text-gray-600 max-w-md mx-auto">
-                  Masuk dengan akun Google Admin ({ADMIN_BOOTSTRAP_EMAIL}) untuk mengirim Toast, Dialog, dan Notifikasi live ke seluruh pengguna Web dan APK.
+                  Masuk dengan akun GitHub Admin (@{ADMIN_BOOTSTRAP_GITHUB_LOGIN}) untuk mengirim Toast, Dialog, dan Notifikasi live ke seluruh pengguna Web dan APK.
                 </p>
               </div>
               {isNativeApk && (
                 <div className="p-3 bg-yellow-100 border-2 border-black text-xs font-bold text-left text-gray-800">
-                  Catatan APK: Login Google Admin disarankan dibuka melalui browser web (https://gitpush.axeoncore.my.id) agar popup Google OAuth tidak diblokir WebView Android.
+                  Catatan APK: Login Admin disarankan dibuka melalui browser web (https://gitpush.axeoncore.my.id) agar popup OAuth Firebase tidak diblokir WebView Android.
                 </div>
               )}
-              <Button
-                variant="yellow"
-                onClick={handleGoogleLogin}
-                disabled={authLoading}
-                className="w-full sm:w-auto text-sm py-3"
-              >
-                {authLoading ? "MEMPROSES LOGIN..." : "MASUK ADMIN DENGAN GOOGLE"}
-              </Button>
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                <Button
+                  variant="yellow"
+                  onClick={handleGithubLogin}
+                  disabled={authLoading}
+                  className="w-full sm:w-auto text-sm py-3 inline-flex items-center justify-center gap-2"
+                >
+                  <Github size={18} />
+                  {authLoading ? "MEMPROSES LOGIN..." : "MASUK ADMIN DENGAN GITHUB"}
+                </Button>
+                <Button
+                  variant="primary"
+                  onClick={handleGoogleLogin}
+                  disabled={authLoading}
+                  className="w-full sm:w-auto text-xs py-3 inline-flex items-center justify-center gap-2"
+                >
+                  ATAU MASUK GOOGLE ({ADMIN_BOOTSTRAP_EMAIL})
+                </Button>
+              </div>
+              {githubSetupNeeded && (
+                <div className="mt-2 p-4 bg-yellow-50 border-4 border-black text-left space-y-2.5 text-xs font-bold text-gray-800">
+                  <p className="font-black uppercase text-black">
+                    Aktifkan Login GitHub di Firebase Console (1x Setup):
+                  </p>
+                  <ol className="list-decimal pl-4 space-y-1.5">
+                    <li>
+                      Buat OAuth App di{" "}
+                      <a
+                        href="https://github.com/settings/developers"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline text-blue-700 inline-flex items-center gap-1"
+                      >
+                        GitHub Developer Settings <ExternalLink size={12} />
+                      </a>{" "}
+                      dan isi Authorization callback URL:
+                      <div className="mt-1 flex items-center gap-2 bg-white border-2 border-black px-2 py-1.5 font-mono text-[11px]">
+                        <span className="truncate flex-1 select-all">{callbackUrl}</span>
+                        <button
+                          type="button"
+                          onClick={handleCopyCallback}
+                          className="px-2 py-0.5 bg-black text-[#FFD600] text-[10px] font-black uppercase shrink-0 inline-flex items-center gap-1"
+                        >
+                          <Copy size={11} /> {copiedCallback ? "Disalin" : "Salin"}
+                        </button>
+                      </div>
+                    </li>
+                    <li>
+                      Buka{" "}
+                      <a
+                        href={firebaseProvidersUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline text-blue-700 inline-flex items-center gap-1"
+                      >
+                        Firebase Console Sign-in Providers <ExternalLink size={12} />
+                      </a>
+                      , aktifkan <strong>GitHub</strong>, lalu tempel Client ID &amp; Client Secret dari GitHub.
+                    </li>
+                  </ol>
+                </div>
+              )}
             </div>
           ) : !isAdmin ? (
             <div className="bg-red-50 border-4 border-black p-6 shadow-[6px_6px_0px_black] text-center space-y-4">
@@ -426,14 +538,18 @@ export function AdminPanelModal({
                   Akses Ditolak
                 </h4>
                 <p className="text-xs font-bold text-gray-700">
-                  Akun <span className="underline">{firebaseUser.email}</span> tidak terdaftar sebagai Admin.
+                  Akun{" "}
+                  <span className="underline">
+                    {firebaseUser.displayName || firebaseUser.email || firebaseUser.uid}
+                  </span>{" "}
+                  tidak terdaftar sebagai Admin.
                 </p>
                 <p className="text-[11px] font-mono text-gray-500">
                   UID: {firebaseUser.uid}
                 </p>
               </div>
-              <Button variant="primary" onClick={handleGoogleLogout} className="text-xs py-2">
-                GANTI AKUN GOOGLE
+              <Button variant="primary" onClick={handleLogout} className="text-xs py-2">
+                GANTI AKUN ADMIN
               </Button>
             </div>
           ) : (
@@ -697,7 +813,12 @@ export function AdminPanelModal({
                 <div className="space-y-4">
                   <div className="bg-yellow-50 border-4 border-black p-4 space-y-1">
                     <p className="text-xs font-black uppercase">Admin Utama (Bootstrap)</p>
-                    <p className="text-sm font-bold text-black">{ADMIN_BOOTSTRAP_EMAIL}</p>
+                    <p className="text-sm font-bold text-black">
+                      GitHub: @{ADMIN_BOOTSTRAP_GITHUB_LOGIN}
+                    </p>
+                    <p className="text-xs font-bold text-gray-700">
+                      Email Cadangan: {ADMIN_BOOTSTRAP_EMAIL}
+                    </p>
                   </div>
 
                   <div className="bg-white border-4 border-black p-4 space-y-3">
@@ -711,7 +832,7 @@ export function AdminPanelModal({
                       <Input
                         value={newAdminEmail}
                         onChange={(e: any) => setNewAdminEmail(e.target.value)}
-                        placeholder="Email Google pengguna"
+                        placeholder="Email akun pengguna"
                       />
                     </div>
                     <Button
