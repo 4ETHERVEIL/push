@@ -56,6 +56,10 @@ export function AdminPanelModal({
   firebaseUser,
   isAdmin,
   isNativeApk,
+  githubToken,
+  githubUser,
+  firebaseSyncError,
+  onSyncGithubAdmin,
   onPreviewBroadcast,
 }: {
   isOpen: boolean;
@@ -63,6 +67,10 @@ export function AdminPanelModal({
   firebaseUser: User | null;
   isAdmin: boolean;
   isNativeApk: boolean;
+  githubToken: string | null;
+  githubUser: any;
+  firebaseSyncError: string | null;
+  onSyncGithubAdmin: () => Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }>;
   onPreviewBroadcast: (item: BroadcastItem) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"compose" | "history" | "admins">("compose");
@@ -181,6 +189,24 @@ export function AdminPanelModal({
     setAuthLoading(true);
     setFeedback(null);
     try {
+      if (githubToken) {
+        const syncRes = await onSyncGithubAdmin();
+        if (syncRes.ok) {
+          setGithubSetupNeeded(false);
+          return;
+        }
+        if (syncRes.errorCode) {
+          handleAuthError({ code: syncRes.errorCode, message: syncRes.errorMessage }, "GitHub");
+          return;
+        }
+      }
+      if (isNativeApk) {
+        setFeedback({
+          type: "error",
+          text: "Silakan login terlebih dahulu lewat tombol LOGIN WITH GITHUB agar sesi Admin otomatis aktif di APK.",
+        });
+        return;
+      }
       await signInWithPopup(auth, githubProvider);
       setGithubSetupNeeded(false);
     } catch (err: any) {
@@ -459,12 +485,19 @@ export function AdminPanelModal({
               <div className="space-y-2">
                 <h4 className="text-lg font-black uppercase">Verifikasi Akun Admin</h4>
                 <p className="text-xs font-bold text-gray-600 max-w-md mx-auto">
-                  Masuk dengan akun GitHub Admin (@{ADMIN_BOOTSTRAP_GITHUB_LOGIN}) untuk mengirim Toast, Dialog, dan Notifikasi live ke seluruh pengguna Web dan APK.
+                  {githubToken && githubUser
+                    ? `Akun GitHub @${githubUser.login} terdeteksi. Hubungkan sesi GitHub Anda ke Firebase Admin untuk menyiarkan Toast, Dialog, dan Notifikasi ke semua pengguna Web dan APK.`
+                    : `Masuk dengan akun GitHub Admin (@${ADMIN_BOOTSTRAP_GITHUB_LOGIN}) untuk mengirim Toast, Dialog, dan Notifikasi live ke seluruh pengguna Web dan APK.`}
                 </p>
               </div>
-              {isNativeApk && (
-                <div className="p-3 bg-yellow-100 border-2 border-black text-xs font-bold text-left text-gray-800">
-                  Catatan APK: Login Admin disarankan dibuka melalui browser web (https://gitpush.axeoncore.my.id) agar popup OAuth Firebase tidak diblokir WebView Android.
+              {firebaseSyncError && (
+                <div className="p-3 bg-red-100 border-2 border-black text-xs font-bold text-left text-red-900">
+                  Sinkronisasi Firebase otomatis gagal ({firebaseSyncError}).{" "}
+                  {firebaseSyncError.includes("operation-not-allowed")
+                    ? "Aktifkan provider GitHub di Firebase Console."
+                    : firebaseSyncError.includes("account-exists-with-different-credential")
+                    ? "Email GitHub Anda bentrok dengan akun Google di Firebase Auth. Hapus/tautkan akun di Firebase Users atau login Google."
+                    : "Coba klik tombol hubungkan di bawah."}
                 </div>
               )}
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
@@ -475,18 +508,24 @@ export function AdminPanelModal({
                   className="w-full sm:w-auto text-sm py-3 inline-flex items-center justify-center gap-2"
                 >
                   <Github size={18} />
-                  {authLoading ? "MEMPROSES LOGIN..." : "MASUK ADMIN DENGAN GITHUB"}
+                  {authLoading
+                    ? "MEMPROSES LOGIN..."
+                    : githubToken && githubUser
+                    ? `AKTIFKAN ADMIN (@${githubUser.login})`
+                    : "MASUK ADMIN DENGAN GITHUB"}
                 </Button>
-                <Button
-                  variant="primary"
-                  onClick={handleGoogleLogin}
-                  disabled={authLoading}
-                  className="w-full sm:w-auto text-xs py-3 inline-flex items-center justify-center gap-2"
-                >
-                  ATAU MASUK GOOGLE ({ADMIN_BOOTSTRAP_EMAIL})
-                </Button>
+                {!isNativeApk && (
+                  <Button
+                    variant="primary"
+                    onClick={handleGoogleLogin}
+                    disabled={authLoading}
+                    className="w-full sm:w-auto text-xs py-3 inline-flex items-center justify-center gap-2"
+                  >
+                    ATAU MASUK GOOGLE ({ADMIN_BOOTSTRAP_EMAIL})
+                  </Button>
+                )}
               </div>
-              {githubSetupNeeded && (
+              {(githubSetupNeeded || firebaseSyncError?.includes("operation-not-allowed")) && (
                 <div className="mt-2 p-4 bg-yellow-50 border-4 border-black text-left space-y-2.5 text-xs font-bold text-gray-800">
                   <p className="font-black uppercase text-black">
                     Aktifkan Login GitHub di Firebase Console (1x Setup):

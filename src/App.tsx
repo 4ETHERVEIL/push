@@ -8,7 +8,13 @@ import { cn } from "./lib/utils";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
-import { User as FirebaseUser, onAuthStateChanged } from "firebase/auth";
+import {
+  User as FirebaseUser,
+  GithubAuthProvider,
+  onAuthStateChanged,
+  signInWithCredential,
+  signOut,
+} from "firebase/auth";
 import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
 import {
   auth,
@@ -189,6 +195,8 @@ export default function App() {
 
   // Admin Panel & Real-Time Broadcast State
   const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [firebaseAuthReady, setFirebaseAuthReady] = useState(false);
+  const [firebaseSyncError, setFirebaseSyncError] = useState<string | null>(null);
   const [isFirebaseAdmin, setIsFirebaseAdmin] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -244,10 +252,27 @@ export default function App() {
     []
   );
 
+  const lastSyncedGithubTokenRef = React.useRef<string | null>(null);
+
+  const syncGithubToFirebase = React.useCallback(async (accessToken: string) => {
+    try {
+      const credential = GithubAuthProvider.credential(accessToken);
+      await signInWithCredential(auth, credential);
+      setFirebaseSyncError(null);
+      return { ok: true as const };
+    } catch (err: any) {
+      const errorCode = String(err?.code || "");
+      const errorMessage = String(err?.message || "");
+      setFirebaseSyncError(errorCode || errorMessage || "auth/unknown");
+      return { ok: false as const, errorCode, errorMessage };
+    }
+  }, []);
+
   // Firebase Auth & Admin Check
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (fbUser) => {
       setFirebaseUser(fbUser);
+      setFirebaseAuthReady(true);
       if (!fbUser) {
         setIsFirebaseAdmin(false);
         return;
@@ -257,6 +282,7 @@ export default function App() {
       );
       if (isBootstrapGithub) {
         setIsFirebaseAdmin(true);
+        setFirebaseSyncError(null);
         return;
       }
       if (!fbUser.emailVerified) {
@@ -265,6 +291,7 @@ export default function App() {
       }
       if (fbUser.email === ADMIN_BOOTSTRAP_EMAIL) {
         setIsFirebaseAdmin(true);
+        setFirebaseSyncError(null);
         return;
       }
       try {
@@ -276,6 +303,17 @@ export default function App() {
     });
     return () => unsub();
   }, []);
+
+  // Auto-sync GitHub Admin token to Firebase Auth (works seamlessly in Web and APK without popup)
+  useEffect(() => {
+    if (!firebaseAuthReady || !token || !user) return;
+    if (String(user.id) !== ADMIN_BOOTSTRAP_GITHUB_ID) return;
+    if (isFirebaseAdmin) return;
+    if (lastSyncedGithubTokenRef.current === token) return;
+
+    lastSyncedGithubTokenRef.current = token;
+    syncGithubToFirebase(token);
+  }, [firebaseAuthReady, token, user, isFirebaseAdmin, syncGithubToFirebase]);
 
   // Real-time Active Broadcasts Listener (Toast, Dialog, Notification)
   useEffect(() => {
@@ -581,10 +619,14 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem("gh_token");
+    lastSyncedGithubTokenRef.current = null;
     setToken(null);
     setTokenScopes([]);
     setUser(null);
     setRepos([]);
+    setFirebaseSyncError(null);
+    setShowAdminPanel(false);
+    signOut(auth).catch(() => {});
   };
 
   const handleCreateRepo = async () => {
@@ -1525,6 +1567,14 @@ export default function App() {
         firebaseUser={firebaseUser}
         isAdmin={isFirebaseAdmin}
         isNativeApk={isNativeApk}
+        githubToken={token}
+        githubUser={user}
+        firebaseSyncError={firebaseSyncError}
+        onSyncGithubAdmin={() =>
+          token
+            ? syncGithubToFirebase(token)
+            : Promise.resolve({ ok: false as const, errorCode: "missing-token", errorMessage: "Token GitHub belum tersedia" })
+        }
         onPreviewBroadcast={triggerBroadcastOnScreen}
       />
     </>
@@ -1545,12 +1595,6 @@ export default function App() {
                 {unreadNotificationIds.size}
               </span>
             )}
-          </button>
-          <button
-            onClick={() => setShowAdminPanel(true)}
-            className="px-3 py-2 bg-black text-[#FFD600] border-4 border-black shadow-[4px_4px_0px_rgba(0,0,0,0.4)] font-black text-xs uppercase flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <Shield size={15} /> Admin
           </button>
         </div>
 
@@ -1632,19 +1676,39 @@ export default function App() {
                 </span>
               )}
             </button>
-            <button
-              onClick={() => setShowAdminPanel(true)}
-              className="px-3 py-1.5 border-2 border-black bg-[#FFD600] hover:bg-yellow-300 transition-colors rounded-full text-xs font-black uppercase flex items-center gap-1.5 whitespace-nowrap shrink-0"
-              title="Buka Admin Panel"
-            >
-              <Shield size={15} />
-              <span className="hidden sm:inline">Admin</span>
-            </button>
-            {user && (
-              <div className="flex items-center gap-2 bg-gray-100 border-2 border-black px-3 py-1 rounded-full">
-                <img src={user.avatar_url} className="w-6 h-6 rounded-full border-2 border-black" alt="" />
-                <span className="text-sm font-black text-gray-800 max-w-[100px] sm:max-w-none truncate">{user.login}</span>
-              </div>
+            {user && (isFirebaseAdmin || String(user.id) === ADMIN_BOOTSTRAP_GITHUB_ID) ? (
+              <button
+                type="button"
+                onClick={() => setShowAdminPanel(true)}
+                className="flex items-center gap-2 bg-[#FFD600] hover:bg-yellow-300 border-2 border-black px-2.5 sm:px-3 py-1 rounded-full transition-colors shadow-[2px_2px_0px_black]"
+                title="Buka Admin Panel Siaran"
+              >
+                <img src={user.avatar_url} className="w-6 h-6 rounded-full border-2 border-black shrink-0" alt="" />
+                <span className="text-sm font-black text-black max-w-[85px] sm:max-w-none truncate">{user.login}</span>
+                <span className="inline-flex items-center gap-1 bg-black text-[#FFD600] px-2 py-0.5 rounded-full text-[10px] font-black uppercase whitespace-nowrap shrink-0">
+                  <Shield size={11} />
+                  <span>Admin</span>
+                </span>
+              </button>
+            ) : (
+              <>
+                {isFirebaseAdmin && (
+                  <button
+                    onClick={() => setShowAdminPanel(true)}
+                    className="px-3 py-1.5 border-2 border-black bg-[#FFD600] hover:bg-yellow-300 transition-colors rounded-full text-xs font-black uppercase flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                    title="Buka Admin Panel"
+                  >
+                    <Shield size={15} />
+                    <span className="hidden sm:inline">Admin</span>
+                  </button>
+                )}
+                {user && (
+                  <div className="flex items-center gap-2 bg-gray-100 border-2 border-black px-3 py-1 rounded-full">
+                    <img src={user.avatar_url} className="w-6 h-6 rounded-full border-2 border-black" alt="" />
+                    <span className="text-sm font-black text-gray-800 max-w-[100px] sm:max-w-none truncate">{user.login}</span>
+                  </div>
+                )}
+              </>
             )}
             <button onClick={handleLogout} className="p-2 border-2 border-black hover:bg-black hover:text-white transition-colors rounded-full">
               <LogOut size={20} />

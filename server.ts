@@ -32,7 +32,7 @@ async function startServer() {
     const params = new URLSearchParams({
       client_id: GITHUB_CLIENT_ID || "",
       redirect_uri: `${APP_URL}/auth/callback`,
-      scope: "repo,delete_repo,workflow",
+      scope: "repo,delete_repo,workflow,read:user,user:email",
       state: `${statePrefix}${Math.random().toString(36).substring(7)}`,
     });
     res.json({ url: `https://github.com/login/oauth/authorize?${params.toString()}` });
