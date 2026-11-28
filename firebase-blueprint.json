@@ -1,0 +1,125 @@
+{
+  "entities": {
+    "Broadcast": {
+      "title": "Broadcast",
+      "description": "Admin-published toast, dialog, or notification broadcast synced in real-time to all users.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["toast", "dialog", "notification"],
+          "description": "Display format on client devices."
+        },
+        "variant": {
+          "type": "string",
+          "enum": ["info", "success", "warning", "error"],
+          "description": "Visual severity style."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120,
+          "description": "Broadcast headline."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "Broadcast message body."
+        },
+        "actionLabel": {
+          "type": "string",
+          "maxLength": 40,
+          "description": "Optional action button label."
+        },
+        "actionUrl": {
+          "type": "string",
+          "maxLength": 300,
+          "pattern": "^(https://.*)?$",
+          "description": "Optional HTTPS action URL."
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50,
+          "description": "Public display name of the sender (e.g. Admin)."
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the broadcast is currently active for users."
+        },
+        "authorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase UID of the admin who created the broadcast."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp."
+        }
+      },
+      "required": [
+        "kind",
+        "variant",
+        "title",
+        "message",
+        "actionLabel",
+        "actionUrl",
+        "senderName",
+        "active",
+        "authorUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized admin account allowed to manage broadcasts.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID."
+        },
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160,
+          "description": "Admin email address."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"],
+          "description": "Role identifier."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin access was granted."
+        }
+      },
+      "required": ["uid", "email", "role", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/broadcasts/{broadcastId}": {
+      "schema": { "$ref": "#/entities/Broadcast" },
+      "description": "Publicly readable active broadcasts; writable only by verified admins."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Private admin registry for RBAC lookups."
+    }
+  }
+}

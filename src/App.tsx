@@ -1,13 +1,30 @@
 import React, { useState, useEffect } from "react";
 import { Octokit } from "octokit";
 import JSZip from "jszip";
-import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder, X, Zap } from "lucide-react";
+import { Github, Upload, FileText, Trash2, Send, LogOut, ChevronRight, AlertCircle, CheckCircle2, Loader2, FolderOpen, ArrowRight, Plus, Globe, Lock, CornerUpLeft, Folder, X, Zap, Bell, Shield } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Card, Input, Modal } from "./components/UI";
 import { cn } from "./lib/utils";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
+import { User as FirebaseUser, onAuthStateChanged } from "firebase/auth";
+import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
+import {
+  auth,
+  db,
+  ADMIN_BOOTSTRAP_EMAIL,
+  BroadcastItem,
+  OperationType,
+  handleFirestoreError,
+} from "./firebase";
+import {
+  ActiveToast,
+  BroadcastDialog,
+  NotificationCenterModal,
+  ToastContainer,
+} from "./components/BroadcastOverlays";
+import { AdminPanelModal } from "./components/AdminPanelModal";
 
 const isNativeApk = Capacitor.isNativePlatform();
 const API_BASE_URL = (
@@ -168,6 +185,139 @@ export default function App() {
     message: "",
     onConfirm: () => {},
   });
+
+  // Admin Panel & Real-Time Broadcast State
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [isFirebaseAdmin, setIsFirebaseAdmin] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [toasts, setToasts] = useState<ActiveToast[]>([]);
+  const [activeDialog, setActiveDialog] = useState<BroadcastItem | null>(null);
+  const [notifications, setNotifications] = useState<BroadcastItem[]>([]);
+  const [unreadNotificationIds, setUnreadNotificationIds] = useState<Set<string>>(new Set());
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() =>
+    typeof window !== "undefined" && "Notification" in window
+      ? Notification.permission
+      : "unsupported"
+  );
+  const seenBroadcastsRef = React.useRef<Record<string, number>>(
+    (() => {
+      try {
+        return JSON.parse(localStorage.getItem("gh_seen_broadcasts") || "{}");
+      } catch {
+        return {};
+      }
+    })()
+  );
+
+  const dismissToast = React.useCallback((instanceId: string) => {
+    setToasts((prev) => prev.filter((t) => t.instanceId !== instanceId));
+  }, []);
+
+  const triggerBroadcastOnScreen = React.useCallback(
+    (item: BroadcastItem) => {
+      if (item.kind === "dialog") {
+        setActiveDialog(item);
+        return;
+      }
+      if (item.kind === "notification") {
+        setUnreadNotificationIds((prev) => {
+          const next = new Set(prev);
+          next.add(item.id);
+          return next;
+        });
+        setNotifications((prev) => {
+          const exists = prev.some((n) => n.id === item.id);
+          return exists ? prev : [item, ...prev];
+        });
+        sendBrowserNotification(item.title, item.message);
+      }
+      const instanceId = `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      setToasts((prev) => [{ ...item, instanceId }, ...prev].slice(0, 4));
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.instanceId !== instanceId));
+      }, 6000);
+    },
+    []
+  );
+
+  // Firebase Auth & Admin Check
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, async (fbUser) => {
+      setFirebaseUser(fbUser);
+      if (!fbUser || !fbUser.emailVerified) {
+        setIsFirebaseAdmin(false);
+        return;
+      }
+      if (fbUser.email === ADMIN_BOOTSTRAP_EMAIL) {
+        setIsFirebaseAdmin(true);
+        return;
+      }
+      try {
+        const adminDoc = await getDoc(doc(db, "admins", fbUser.uid));
+        setIsFirebaseAdmin(adminDoc.exists());
+      } catch {
+        setIsFirebaseAdmin(false);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Real-time Active Broadcasts Listener (Toast, Dialog, Notification)
+  useEffect(() => {
+    const q = query(collection(db, "broadcasts"), where("active", "==", true));
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const activeItems: BroadcastItem[] = snapshot.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as Omit<BroadcastItem, "id">),
+        }));
+        activeItems.sort((a, b) => {
+          const tA = a.updatedAt?.toMillis?.() || 0;
+          const tB = b.updatedAt?.toMillis?.() || 0;
+          return tB - tA;
+        });
+
+        setNotifications(activeItems.filter((item) => item.kind === "notification"));
+
+        let seenChanged = false;
+        activeItems.forEach((item) => {
+          const version = item.updatedAt?.toMillis?.() ?? 0;
+          if (!version) return;
+          if (seenBroadcastsRef.current[item.id] !== version) {
+            seenBroadcastsRef.current[item.id] = version;
+            seenChanged = true;
+            triggerBroadcastOnScreen(item);
+          }
+        });
+        if (seenChanged) {
+          try {
+            localStorage.setItem(
+              "gh_seen_broadcasts",
+              JSON.stringify(seenBroadcastsRef.current)
+            );
+          } catch {
+            // Ignore storage quota issues
+          }
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, "broadcasts");
+      }
+    );
+    return () => unsub();
+  }, [triggerBroadcastOnScreen]);
+
+  const handleRequestNotificationPermission = () => {
+    if ("Notification" in window) {
+      Notification.requestPermission()
+        .then((perm) => setNotificationPermission(perm))
+        .catch(() => {});
+    }
+  };
   
   // Security & Anti-Inspect System
   useEffect(() => {
@@ -1341,9 +1491,57 @@ export default function App() {
     return indices;
   }, [files, currentDirectory]);
 
+  const sharedBroadcastOverlays = (
+    <>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <BroadcastDialog dialog={activeDialog} onClose={() => setActiveDialog(null)} />
+      <NotificationCenterModal
+        isOpen={showNotifications}
+        onClose={() => {
+          setShowNotifications(false);
+          setUnreadNotificationIds(new Set());
+        }}
+        notifications={notifications}
+        unreadIds={unreadNotificationIds}
+        onMarkAllRead={() => setUnreadNotificationIds(new Set())}
+        notificationPermission={notificationPermission}
+        onRequestPermission={handleRequestNotificationPermission}
+      />
+      <AdminPanelModal
+        isOpen={showAdminPanel}
+        onClose={() => setShowAdminPanel(false)}
+        firebaseUser={firebaseUser}
+        isAdmin={isFirebaseAdmin}
+        isNativeApk={isNativeApk}
+        onPreviewBroadcast={triggerBroadcastOnScreen}
+      />
+    </>
+  );
+
   if (!token) {
     return (
-      <div className="min-h-screen bg-[#FFD600] flex items-center justify-center p-4 font-sans selection:bg-black selection:text-[#FFD600]">
+      <div className="min-h-screen bg-[#FFD600] flex items-center justify-center p-4 font-sans selection:bg-black selection:text-[#FFD600] relative">
+        <div className="fixed top-4 right-4 z-40 flex items-center gap-2">
+          <button
+            onClick={() => setShowNotifications(true)}
+            className="relative p-2.5 bg-white border-4 border-black shadow-[4px_4px_0px_black] hover:bg-gray-100 transition-colors"
+            title="Notifikasi"
+          >
+            <Bell size={18} />
+            {unreadNotificationIds.size > 0 && (
+              <span className="absolute -top-2 -right-2 min-w-[20px] h-5 px-1 bg-red-500 text-white border-2 border-black text-[10px] font-black flex items-center justify-center">
+                {unreadNotificationIds.size}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setShowAdminPanel(true)}
+            className="px-3 py-2 bg-black text-[#FFD600] border-4 border-black shadow-[4px_4px_0px_rgba(0,0,0,0.4)] font-black text-xs uppercase flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Shield size={15} /> Admin
+          </button>
+        </div>
+
         <motion.div 
           initial={{ scale: 0.9, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -1392,6 +1590,7 @@ export default function App() {
             </div>
           </Card>
         </motion.div>
+        {sharedBroadcastOverlays}
       </div>
     );
   }
@@ -1400,19 +1599,39 @@ export default function App() {
     <div className="min-h-screen bg-[#F0F0F0] font-sans selection:bg-black selection:text-white pb-20">
       {/* Header */}
       <header className="bg-white border-b-4 border-black p-4 sticky top-0 z-50">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
+        <div className="max-w-6xl mx-auto flex items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="bg-black p-2 rounded-lg rotate-2">
               <Github className="text-white w-6 h-6" />
             </div>
-            <h1 className="text-xl font-display font-black tracking-tight hidden sm:block">FAST PUSH</h1>
+            <h1 className="text-xl font-display font-black tracking-tight hidden sm:block whitespace-nowrap">FAST PUSH</h1>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => setShowNotifications(true)}
+              className="relative p-2 border-2 border-black bg-white hover:bg-[#FFD600] transition-colors rounded-full"
+              title="Pusat Notifikasi"
+            >
+              <Bell size={18} />
+              {unreadNotificationIds.size > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 bg-red-500 text-white border-2 border-black text-[10px] font-black rounded-full flex items-center justify-center">
+                  {unreadNotificationIds.size}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setShowAdminPanel(true)}
+              className="px-3 py-1.5 border-2 border-black bg-[#FFD600] hover:bg-yellow-300 transition-colors rounded-full text-xs font-black uppercase flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              title="Buka Admin Panel"
+            >
+              <Shield size={15} />
+              <span className="hidden sm:inline">Admin</span>
+            </button>
             {user && (
               <div className="flex items-center gap-2 bg-gray-100 border-2 border-black px-3 py-1 rounded-full">
                 <img src={user.avatar_url} className="w-6 h-6 rounded-full border-2 border-black" alt="" />
-                <span className="text-sm font-black text-gray-800">{user.login}</span>
+                <span className="text-sm font-black text-gray-800 max-w-[100px] sm:max-w-none truncate">{user.login}</span>
               </div>
             )}
             <button onClick={handleLogout} className="p-2 border-2 border-black hover:bg-black hover:text-white transition-colors rounded-full">
@@ -2108,6 +2327,7 @@ export default function App() {
           ZYCHO
         </p>
       </footer>
+      {sharedBroadcastOverlays}
     </div>
   );
 }
