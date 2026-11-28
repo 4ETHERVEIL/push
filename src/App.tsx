@@ -1569,12 +1569,14 @@ export default function App() {
         isNativeApk={isNativeApk}
         githubToken={token}
         githubUser={user}
+        tokenScopes={tokenScopes}
         firebaseSyncError={firebaseSyncError}
         onSyncGithubAdmin={() =>
           token
             ? syncGithubToFirebase(token)
             : Promise.resolve({ ok: false as const, errorCode: "missing-token", errorMessage: "Token GitHub belum tersedia" })
         }
+        onReloginGithub={handleLogin}
         onPreviewBroadcast={triggerBroadcastOnScreen}
       />
     </>

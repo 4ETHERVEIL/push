@@ -58,8 +58,10 @@ export function AdminPanelModal({
   isNativeApk,
   githubToken,
   githubUser,
+  tokenScopes,
   firebaseSyncError,
   onSyncGithubAdmin,
+  onReloginGithub,
   onPreviewBroadcast,
 }: {
   isOpen: boolean;
@@ -69,8 +71,10 @@ export function AdminPanelModal({
   isNativeApk: boolean;
   githubToken: string | null;
   githubUser: any;
+  tokenScopes: string[];
   firebaseSyncError: string | null;
   onSyncGithubAdmin: () => Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }>;
+  onReloginGithub: () => void;
   onPreviewBroadcast: (item: BroadcastItem) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"compose" | "history" | "admins">("compose");
@@ -154,6 +158,9 @@ export function AdminPanelModal({
     }
   };
 
+  const missingEmailScope =
+    Boolean(githubToken) && tokenScopes.length > 0 && !tokenScopes.includes("user:email");
+
   const handleAuthError = (err: any, providerLabel: "GitHub" | "Google") => {
     const code = String(err?.code || "");
     const msg = String(err?.message || "");
@@ -168,17 +175,19 @@ export function AdminPanelModal({
       }
       setFeedback({
         type: "error",
-        text: `Provider ${providerLabel} belum diaktifkan di Firebase Console. Aktifkan dulu di Firebase Authentication atau gunakan tombol Login Google di bawah.`,
+        text: `Provider ${providerLabel} belum diaktifkan di Firebase Console.`,
+      });
+    } else if (code === "auth/invalid-credential") {
+      setFeedback({
+        type: "error",
+        text: missingEmailScope
+          ? "Token login GitHub Anda belum memiliki izin 'user:email'. Klik 'Perbarui Login GitHub' di bawah untuk login ulang otomatis."
+          : "Kredensial GitHub ditolak Firebase (auth/invalid-credential). Coba klik 'Perbarui Login GitHub' atau pastikan Client ID & Client Secret GitHub di Firebase Console sudah benar.",
       });
     } else if (code === "auth/account-exists-with-different-credential") {
       setFeedback({
         type: "error",
-        text: "Email ini sudah terdaftar di Firebase dengan metode login lain. Gunakan login Google atau hapus/tautkan akun di Firebase Authentication.",
-      });
-    } else if (isNativeApk) {
-      setFeedback({
-        type: "error",
-        text: `Login ${providerLabel} Admin tidak didukung di dalam WebView APK. Buka versi web (https://gitpush.axeoncore.my.id) di browser untuk mengirim siaran ke semua APK.`,
+        text: "Email ini sudah terdaftar di Firebase dengan metode login lain. Hapus/tautkan akun di Firebase Authentication -> Users.",
       });
     } else {
       setFeedback({ type: "error", text: `Gagal login ${providerLabel}: ${err?.message || "Coba lagi"}` });
@@ -492,28 +501,56 @@ export function AdminPanelModal({
               </div>
               {firebaseSyncError && (
                 <div className="p-3 bg-red-100 border-2 border-black text-xs font-bold text-left text-red-900">
-                  Sinkronisasi Firebase otomatis gagal ({firebaseSyncError}).{" "}
-                  {firebaseSyncError.includes("operation-not-allowed")
-                    ? "Aktifkan provider GitHub di Firebase Console."
-                    : firebaseSyncError.includes("account-exists-with-different-credential")
-                    ? "Email GitHub Anda bentrok dengan akun Google di Firebase Auth. Hapus/tautkan akun di Firebase Users atau login Google."
-                    : "Coba klik tombol hubungkan di bawah."}
+                  {missingEmailScope ? (
+                    <>
+                      Sesi login GitHub Anda dibuat sebelum izin <span className="font-mono">user:email</span> ditambahkan. Klik tombol{" "}
+                      <strong>PERBARUI LOGIN GITHUB</strong> di bawah agar langsung aktif di WebView &amp; APK.
+                    </>
+                  ) : firebaseSyncError.includes("operation-not-allowed") ? (
+                    "Provider GitHub belum diaktifkan di Firebase Console."
+                  ) : firebaseSyncError.includes("account-exists-with-different-credential") ? (
+                    "Email GitHub Anda bentrok dengan akun Google di Firebase Auth. Hapus/tautkan akun di Firebase Users."
+                  ) : (
+                    `Sinkronisasi Firebase otomatis gagal (${firebaseSyncError}). Coba perbarui login GitHub atau cek pengaturan GitHub di Firebase Console.`
+                  )}
                 </div>
               )}
               <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-                <Button
-                  variant="yellow"
-                  onClick={handleGithubLogin}
-                  disabled={authLoading}
-                  className="w-full sm:w-auto text-sm py-3 inline-flex items-center justify-center gap-2"
-                >
-                  <Github size={18} />
-                  {authLoading
-                    ? "MEMPROSES LOGIN..."
-                    : githubToken && githubUser
-                    ? `AKTIFKAN ADMIN (@${githubUser.login})`
-                    : "MASUK ADMIN DENGAN GITHUB"}
-                </Button>
+                {missingEmailScope ? (
+                  <Button
+                    variant="yellow"
+                    onClick={onReloginGithub}
+                    disabled={authLoading}
+                    className="w-full sm:w-auto text-sm py-3 inline-flex items-center justify-center gap-2"
+                  >
+                    <Github size={18} />
+                    PERBARUI LOGIN GITHUB
+                  </Button>
+                ) : (
+                  <Button
+                    variant="yellow"
+                    onClick={handleGithubLogin}
+                    disabled={authLoading}
+                    className="w-full sm:w-auto text-sm py-3 inline-flex items-center justify-center gap-2"
+                  >
+                    <Github size={18} />
+                    {authLoading
+                      ? "MEMPROSES LOGIN..."
+                      : githubToken && githubUser
+                      ? `AKTIFKAN ADMIN (@${githubUser.login})`
+                      : "MASUK ADMIN DENGAN GITHUB"}
+                  </Button>
+                )}
+                {githubToken && !missingEmailScope && (
+                  <Button
+                    variant="primary"
+                    onClick={onReloginGithub}
+                    disabled={authLoading}
+                    className="w-full sm:w-auto text-xs py-3 inline-flex items-center justify-center gap-2"
+                  >
+                    LOGIN ULANG GITHUB
+                  </Button>
+                )}
                 {!isNativeApk && (
                   <Button
                     variant="primary"
